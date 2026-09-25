@@ -28,7 +28,7 @@ export default async function setup() {
     const dir = mkdtempSync(path.join(tmpdir(), "opsflow-test-pg-"));
     const port = await freePort();
     const password = randomBytes(12).toString("hex");
-    const pg = new EmbeddedPostgres({ databaseDir: dir, user: "opsflow_test", password, port, persistent: false });
+    const pg = new EmbeddedPostgres({ databaseDir: dir, user: "opsflow_test", password, port, persistent: true });
     await pg.initialise();
     await pg.start();
     await pg.createDatabase("opsflow_test");
