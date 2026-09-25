@@ -1,0 +1,7 @@
+import next from "eslint-config-next";
+
+const config = [
+  ...next,
+  { ignores: [".next/**", "src/generated/**", "node_modules/**", ".data/**", "next-env.d.ts"] },
+];
+export default config;

@@ -1,0 +1,249 @@
+// OpsFlow data model.
+//
+// Tenant isolation: every child table carries `userId` and references
+// Workflow via the composite key (workflowId, userId). The database itself
+// therefore refuses a child row whose owner differs from its workflow's owner.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum WorkflowType {
+  DELIVERY_REQUEST
+}
+
+enum WorkflowSource {
+  PASTE
+  UPLOAD
+  WEBHOOK
+}
+
+enum WorkflowStatus {
+  RECEIVED
+  PROCESSING
+  EXTRACTED
+  VALIDATING
+  REVIEW_REQUIRED
+  APPROVED
+  EXECUTING
+  COMPLETED
+  FAILED
+  REJECTED
+}
+
+enum ConfidenceLevel {
+  HIGH
+  MEDIUM
+  LOW
+  UNKNOWN
+}
+
+enum ReviewDecision {
+  APPROVED
+  REJECTED
+}
+
+enum ActionType {
+  CUSTOMER_CONFIRMATION
+}
+
+enum ActionStatus {
+  SUCCEEDED
+  FAILED
+}
+
+enum ActorType {
+  USER
+  SYSTEM
+  WEBHOOK
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  sessions       Session[]
+  workflows      Workflow[]
+  apiCredentials ApiCredential[]
+  auditEvents    AuditEvent[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  // SHA-256 of the opaque cookie token. The raw token is never stored.
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// Per-user webhook signing credential. The secret is encrypted at rest (AES-256-GCM).
+model ApiCredential {
+  id              String    @id @default(cuid())
+  userId          String
+  /// Public identifier sent in X-OpsFlow-Key-Id.
+  keyId           String    @unique
+  encryptedSecret String
+  label           String
+  createdAt       DateTime  @default(now())
+  revokedAt       DateTime?
+  lastUsedAt      DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Workflow {
+  id              String          @id @default(cuid())
+  userId          String
+  type            WorkflowType
+  status          WorkflowStatus  @default(RECEIVED)
+  source          WorkflowSource
+  /// Denormalised from extraction for list views and duplicate detection.
+  customerName    String?
+  overallConfidence ConfidenceLevel @default(UNKNOWN)
+  /// True when validation or AI analysis found something a human must look at.
+  needsAttention  Boolean         @default(false)
+  failureReason   String?
+  idempotencyKey  String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  input      WorkflowInput?
+  extracted  ExtractedData?
+  validations ValidationResult[]
+  reviews    Review[]
+  actions    WorkflowAction[]
+  auditEvents AuditEvent[]
+
+  @@unique([id, userId])
+  @@unique([userId, idempotencyKey])
+  @@index([userId, status])
+  @@index([userId, createdAt])
+}
+
+model WorkflowInput {
+  id          String   @id @default(cuid())
+  workflowId  String   @unique
+  userId      String
+  kind        String   // "text" | "document"
+  fileName    String?
+  mimeType    String?
+  sizeBytes   Int
+  contentHash String
+  /// Extracted plain text (already length-limited).
+  content     String
+  createdAt   DateTime @default(now())
+
+  workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@unique([workflowId, userId])
+}
+
+model ExtractedData {
+  id                 String   @id @default(cuid())
+  workflowId         String   @unique
+  userId             String
+  provider           String
+  model              String
+  attempts           Int      @default(1)
+  /// Validated model output exactly as returned (never edited).
+  aiOutput           Json
+  /// Current working copy: fields + per-field status, updated by human edits.
+  fields             Json
+  fieldStatus        Json
+  missingInformation Json
+  ambiguities        Json
+  requiresHumanReview Boolean
+  reason             String?
+  recommendedAction  String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@unique([workflowId, userId])
+}
+
+model ValidationResult {
+  id         String   @id @default(cuid())
+  workflowId String
+  userId     String
+  passed     Boolean
+  errorCount Int
+  warningCount Int
+  issues     Json
+  createdAt  DateTime @default(now())
+
+  workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@index([workflowId, createdAt])
+}
+
+model Review {
+  id         String         @id @default(cuid())
+  workflowId String
+  userId     String
+  reviewerId String
+  decision   ReviewDecision
+  comment    String?
+  /// Field-level differences between the AI output and what was approved.
+  changes    Json
+  createdAt  DateTime       @default(now())
+
+  workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@index([workflowId])
+}
+
+model WorkflowAction {
+  id         String       @id @default(cuid())
+  workflowId String
+  userId     String
+  type       ActionType
+  status     ActionStatus
+  /// "simulated" — no external side effects are performed.
+  mode       String
+  executedBy String
+  output     Json?
+  error      String?
+  createdAt  DateTime     @default(now())
+
+  workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@index([workflowId])
+}
+
+model AuditEvent {
+  id         String    @id @default(cuid())
+  /// Null for events that occur before a workflow exists (e.g. rejected webhook calls).
+  workflowId String?
+  userId     String
+  actorType  ActorType
+  actorId    String?
+  eventType  String
+  message    String
+  metadata   Json?
+  createdAt  DateTime  @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workflow Workflow? @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@index([workflowId, createdAt])
+  @@index([userId, createdAt])
+}

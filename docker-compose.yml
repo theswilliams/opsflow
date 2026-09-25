@@ -1,0 +1,12 @@
+# Optional alternative to `npm run db:start`. Set POSTGRES_PASSWORD in your shell or .env first.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: opsflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: opsflow
+    ports: ["54329:5432"]
+    volumes: ["opsflow-pg:/var/lib/postgresql/data"]
+volumes:
+  opsflow-pg:
