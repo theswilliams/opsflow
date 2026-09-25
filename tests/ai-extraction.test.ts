@@ -7,6 +7,8 @@ import { ProviderError } from "@/lib/ai/provider";
 import { extractionSchema } from "@/lib/ai/schema";
 import { DELIVERY_TEXT, ScriptedProvider, TODAY } from "./helpers";
 
+const reconcile = (e: Parameters<typeof reconcileExtraction>[0], src: string) => reconcileExtraction(e, src, TODAY);
+
 const opts = { retryDelayMs: 0 };
 const good = () => extractDeliveryRequest(DELIVERY_TEXT, TODAY);
 
@@ -161,9 +163,9 @@ describe("extraction pipeline", () => {
   it("downgrades fabricated evidence that does not appear in the source", () => {
     const e = good();
     e.field_assessments.customer.evidence = "Customer: Totally Different Company";
-    const { extraction, corrections } = reconcileExtraction(e, DELIVERY_TEXT);
+    const { extraction, corrections } = reconcile(e, DELIVERY_TEXT);
     expect(extraction.field_assessments.customer.evidence).toBeNull();
-    expect(extraction.field_assessments.customer.status).toBe("inferred");
+    expect(extraction.field_assessments.customer.status).toBe("ambiguous");
     expect(extraction.field_assessments.customer.confidence).not.toBe("high");
     expect(corrections.length).toBeGreaterThan(0);
   });
@@ -172,9 +174,10 @@ describe("extraction pipeline", () => {
     const e = good();
     e.field_assessments.contact_phone = { status: "known", confidence: "high", evidence: null, note: null };
     e.field_assessments.address = { status: "missing", confidence: "high", evidence: null, note: null };
-    const { extraction } = reconcileExtraction(e, DELIVERY_TEXT);
+    const { extraction } = reconcile(e, DELIVERY_TEXT);
     expect(extraction.field_assessments.contact_phone.status).toBe("missing");
-    expect(extraction.field_assessments.address.status).toBe("inferred");
+    // Value present but marked missing: repaired, and (its evidence being absent) flagged for review.
+    expect(extraction.field_assessments.address.status).not.toBe("missing");
     expect(extraction.field_assessments.address.confidence).toBe("low");
   });
 });

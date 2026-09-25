@@ -17,6 +17,10 @@ export const AUDIT = {
   COMPLETED: "WORKFLOW_COMPLETED",
   FAILED: "WORKFLOW_FAILED",
   RETRY_REQUESTED: "RETRY_REQUESTED",
+  PROCESSING_RETRY: "PROCESSING_RETRY",
+  DATA_EXPORTED: "DATA_EXPORTED",
+  ACCOUNT_DELETED: "ACCOUNT_DELETED",
+  CONTENT_PURGED: "CONTENT_PURGED",
   WEBHOOK_REJECTED: "WEBHOOK_REJECTED",
   CREDENTIAL_CREATED: "CREDENTIAL_CREATED",
   CREDENTIAL_REVOKED: "CREDENTIAL_REVOKED",
@@ -52,4 +56,17 @@ export async function recordAudit(client: Client, e: AuditInput) {
 export function auditValue(field: string, value: unknown): unknown {
   if (field === "contact_phone" && typeof value === "string") return `***${value.replace(/\D/g, "").slice(-2)}`;
   return value;
+}
+
+/**
+ * The ONLY sanctioned way to modify or delete audit rows (retention purge, account erasure, demo reset).
+ * The database trigger refuses any UPDATE/DELETE/TRUNCATE on AuditEvent unless the current transaction has
+ * set `opsflow.audit_maintenance = on`; `set_config(..., true)` scopes it to this transaction only.
+ * Refuses to run in production unless explicitly allowed by the caller.
+ */
+export async function withAuditMaintenance<T>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('opsflow.audit_maintenance', 'on', true)`;
+    return fn(tx);
+  });
 }

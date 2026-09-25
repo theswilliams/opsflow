@@ -35,7 +35,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "// Builds the exact JSON body and signs it: HMAC-SHA256(secret, timestamp + \".\" + body)\nconst crypto = require('crypto');\nconst input = $json.body ?? $json;\nconst body = JSON.stringify({\n  type: 'delivery_request',\n  text: String(input.text ?? ''),\n  external_id: String(input.external_id ?? $execution.id),\n});\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(timestamp + '.' + body).digest('hex');\nreturn { json: { body, timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };"
+        "jsCode": "// Builds the exact JSON body and signs it (scheme v1): HMAC-SHA256(secret, 'v1' LF timestamp LF idempotency-key LF body).\nconst crypto = require('crypto');\nconst input = $json.body ?? $json;\nconst text = String(input.text ?? '');\n// STABLE idempotency: prefer the upstream system's own id (e.g. the email Message-ID). Otherwise derive it from the\n// content, so a repeated trigger for the same message returns the same OpsFlow workflow instead of creating a\n// duplicate (the n8n execution id changes on every run and must NOT be used for this).\nconst externalId = String(input.external_id ?? input.message_id ?? crypto.createHash('sha256').update(text).digest('hex').slice(0, 32));\nconst body = JSON.stringify({ type: 'delivery_request', text, external_id: externalId });\nconst timestamp = String(Math.floor(Date.now() / 1000));\n// external_id lives inside the signed body; no separate Idempotency-Key header is sent, so its slot is empty.\nconst message = ['v1', timestamp, '', body].join('\\n');\nconst signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(message).digest('hex');\nreturn { json: { body, timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };"
       },
       "name": "Sign request",
       "type": "n8n-nodes-base.code",
@@ -145,7 +145,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "// GET requests are signed over an empty body.\nconst crypto = require('crypto');\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(timestamp + '.').digest('hex');\nreturn { json: { timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };"
+        "jsCode": "// GET requests are signed over an empty body and an empty idempotency-key slot.\nconst crypto = require('crypto');\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst message = ['v1', timestamp, '', ''].join('\\n');\nconst signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(message).digest('hex');\nreturn { json: { timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };"
       },
       "name": "Sign status request",
       "type": "n8n-nodes-base.code",

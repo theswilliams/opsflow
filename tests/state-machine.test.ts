@@ -30,9 +30,18 @@ describe("workflow state machine", () => {
     for (const s of ["RECEIVED", "PROCESSING", "EXTRACTED", "VALIDATING", "REVIEW_REQUIRED", "APPROVED", "EXECUTING"] as const) {
       expect(canTransition(s, "FAILED")).toBe(true);
     }
-    expect(canTransition("FAILED", "PROCESSING")).toBe(true);
-    expect(canTransition("FAILED", "EXECUTING")).toBe(true);
+    expect(canTransition("FAILED", "RECEIVED")).toBe(true); // retry processing
+    expect(canTransition("FAILED", "APPROVED")).toBe(true); // retry the action (only reachable when approved)
+    expect(canTransition("FAILED", "EXECUTING")).toBe(false); // must go back through APPROVED and the job queue
     expect(canTransition("FAILED", "COMPLETED")).toBe(false);
+  });
+
+  it("allows requeueing after a lost lease, but never skipping review", () => {
+    for (const s of ["PROCESSING", "EXTRACTED", "VALIDATING"] as const) expect(canTransition(s, "RECEIVED")).toBe(true);
+    expect(canTransition("EXECUTING", "APPROVED")).toBe(true);
+    expect(canTransition("REVIEW_REQUIRED", "RECEIVED")).toBe(false);
+    expect(canTransition("APPROVED", "RECEIVED")).toBe(false);
+    expect(canTransition("COMPLETED", "APPROVED")).toBe(false);
   });
 
   it("never transitions a state to itself", () => {

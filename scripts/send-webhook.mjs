@@ -2,6 +2,9 @@
 //
 //   OPSFLOW_KEY_ID=ofk_… OPSFLOW_SECRET=ofs_… node scripts/send-webhook.mjs [base-url] [text-file]
 //   OPSFLOW_KEY_ID=ofk_… OPSFLOW_SECRET=ofs_… node scripts/send-webhook.mjs --status <workflow-id> [base-url]
+//
+// Signing scheme v1 (see docs/N8N.md): HMAC-SHA256(secret, "v1\n<timestamp>\n<idempotency-key>\n<raw body>").
+// Sending the SAME text twice within five minutes returns the original workflow ("duplicate": true).
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -14,9 +17,10 @@ if (!keyId || !secret) {
 
 const args = process.argv.slice(2);
 const statusIdx = args.indexOf("--status");
-const sign = (body) => {
+const sign = (body, idempotencyKey = "") => {
   const ts = String(Math.floor(Date.now() / 1000));
-  const sig = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
+  const message = ["v1", ts, idempotencyKey, body].join("\n");
+  const sig = createHmac("sha256", secret).update(message).digest("hex");
   return { "X-OpsFlow-Key-Id": keyId, "X-OpsFlow-Timestamp": ts, "X-OpsFlow-Signature": `sha256=${sig}` };
 };
 
@@ -30,7 +34,7 @@ if (statusIdx >= 0) {
   const text = args[1]
     ? readFileSync(args[1], "utf8")
     : "Customer: ABC Building Supplies\n\nCan you deliver 4 pallets of roofing shingles to 125 King Street, London Ontario this Friday morning?\nPlease call Mike when the driver is on the way.";
-  const body = JSON.stringify({ type: "delivery_request", text, external_id: `demo-${Date.now()}` });
+  const body = JSON.stringify({ type: "delivery_request", text });
   res = await fetch(`${base}/api/webhooks/workflow`, { method: "POST", headers: { "Content-Type": "application/json", ...sign(body) }, body });
 }
 console.log(res.status, JSON.stringify(await res.json(), null, 2));

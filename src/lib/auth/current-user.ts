@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 import { getDb } from "@/lib/db";
+import { clientIpFromRequest } from "@/lib/net/client-ip";
 import { createSession, destroySession, findSessionUser, SESSION_TTL_MS } from "./service";
 
 const COOKIE = "opsflow_session";
@@ -46,9 +47,7 @@ export async function requireUser(): Promise<SessionUser> {
   return user;
 }
 
-/** See clientIpFrom in the webhook handler: forwarded headers are only trusted when TRUST_PROXY=true. */
-export async function clientIp(): Promise<string> {
-  if (process.env.TRUST_PROXY !== "true") return "direct";
-  const h = await headers();
-  return h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip") || "unknown";
+/** Client address per the trust model in lib/net/client-ip.ts, or null when it cannot be determined. */
+export async function clientIp(): Promise<string | null> {
+  return clientIpFromRequest(await headers());
 }

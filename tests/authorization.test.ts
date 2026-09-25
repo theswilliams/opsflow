@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getDb } from "@/lib/db";
 import { attentionRequired, dashboardStats, getWorkflowDetail, listWorkflows, recentActivity } from "@/lib/workflow/queries";
-import { approveWorkflow, editWorkflowFields, executeApprovedWorkflow, processWorkflow, rejectWorkflow, retryWorkflow } from "@/lib/workflow/service";
+import { approveWorkflow, editWorkflowFields, rejectWorkflow, retryWorkflow } from "@/lib/workflow/service";
 import { makeUser, makeWorkflow, testDeps } from "./helpers";
 
 const db = getDb();
@@ -42,11 +42,9 @@ describe("tenant isolation (IDOR / BOLA)", async () => {
     const before = await db.workflow.findUniqueOrThrow({ where: { id: aw.id } });
     const deps = testDeps();
     await expect(editWorkflowFields(deps, { ...asMallory, updates: { customer: "Hacked" } })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(approveWorkflow(deps, asMallory)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(approveWorkflow(deps, { ...asMallory, expectedVersion: before.version })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(rejectWorkflow(deps, asMallory)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(executeApprovedWorkflow(deps, asMallory)).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(retryWorkflow(deps, asMallory)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(processWorkflow(deps, asMallory)).rejects.toMatchObject({ code: "NOT_FOUND" });
     const after = await db.workflow.findUniqueOrThrow({ where: { id: aw.id } });
     expect(after).toEqual(before);
     expect(await db.review.count({ where: { workflowId: aw.id } })).toBe(0);
