@@ -34,8 +34,6 @@ const TRANSITIONS: Record<WorkflowStatusName, readonly WorkflowStatusName[]> = {
   REJECTED: [],
 };
 
-export const TERMINAL_STATUSES: readonly WorkflowStatusName[] = ["COMPLETED", "REJECTED"];
-
 export class InvalidTransitionError extends Error {
   constructor(
     readonly from: WorkflowStatusName,
@@ -53,6 +51,3 @@ export function assertTransition(from: WorkflowStatusName, to: WorkflowStatusNam
 }
 
 export const nextStatuses = (from: WorkflowStatusName) => TRANSITIONS[from];
-
-/** Statuses a person can still act on or that may still change. */
-export const isOpen = (s: WorkflowStatusName) => !TERMINAL_STATUSES.includes(s);

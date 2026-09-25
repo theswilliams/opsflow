@@ -27,7 +27,3 @@ export function getEnv(): Env {
   cached = parsed.data;
   return cached;
 }
-
-export function resetEnvCache() {
-  cached = undefined;
-}
