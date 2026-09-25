@@ -131,4 +131,13 @@ export async function computeValidation(deps: WorkflowDeps, userId: string, work
   });
 }
 
-export const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 300);
+/** Operator-facing error text stored on jobs: secrets and credentials are scrubbed and it is truncated. Never shown to users. */
+export function errorMessage(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  return raw
+    .replace(/\b(sk|ofs|ofk)[-_][A-Za-z0-9_-]{6,}/g, "[redacted]")
+    .replace(/(password|passwd|secret|token|api[-_]?key|authorization)\s*[=:]\s*\S+/gi, "$1=[redacted]")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/postgres(ql)?:\/\/\S+/gi, "postgresql://[redacted]")
+    .slice(0, 300);
+}

@@ -22,7 +22,9 @@
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
     "dev:next": "next dev",
     "worker": "tsx scripts/worker.ts",
-    "check:migrations": "node scripts/check-migrations.mjs"
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "e2e": "node scripts/e2e-smoke.mjs",
+    "verify:audit": "node scripts/verify-audit-fixes.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

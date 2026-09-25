@@ -46,3 +46,22 @@ describe("hostile content is inert", () => {
     expect(visible).not.toMatch(/hunter2|\/srv\/app/);
   });
 });
+
+describe("operator-facing error text is scrubbed before it is stored", () => {
+  it("removes API keys, credentials, passwords, bearer tokens and connection strings", async () => {
+    const { errorMessage } = await import("@/lib/workflow/core");
+    const out = errorMessage(new Error("401 sk-ant-api03-ABCDEF123456 Bearer abc.def.ghi password=hunter2 secret: s3cr3t ofs_Y0zbPh4ZB-token postgresql://opsflow:pw@localhost:5432/db failed"));
+    expect(out).not.toMatch(/sk-ant|abc\.def|hunter2|s3cr3t|ofs_Y0z|opsflow:pw/);
+    expect(out).toContain("failed");
+    expect(errorMessage(new Error("x".repeat(1000))).length).toBe(300);
+  });
+
+  it("job.lastError never contains the secrets that a failing provider echoed back", async () => {
+    const user = await makeUser("scrub");
+    const { testDeps } = await import("./helpers");
+    const boom = testDeps({ ai: { name: "mock", isMock: true, extract: async () => Promise.reject(new Error("upstream said: invalid x-api-key sk-ant-api03-LEAKEDKEY123456")) }, maxJobAttempts: 1 });
+    const { id } = await makeWorkflow(user.id, DELIVERY_TEXT, boom);
+    const job = await db.job.findFirstOrThrow({ where: { workflowId: id } });
+    expect(job.lastError ?? "").not.toMatch(/LEAKEDKEY/);
+  });
+});
