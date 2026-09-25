@@ -1,0 +1,451 @@
+{
+  "name": "OpsFlow — intake, review and notify",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## OpsFlow intake\nReceives a messy request, submits it to OpsFlow (AI extraction + validation), then **waits for a person to approve it in OpsFlow** before notifying.\n\nRequires n8n env vars: `OPSFLOW_URL`, `OPSFLOW_KEY_ID`, `OPSFLOW_SECRET`, and `NODE_FUNCTION_ALLOW_BUILTIN=crypto`. Never paste the secret into a node.",
+        "width": 420,
+        "height": 170
+      },
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "opsflow-intake",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "name": "Incoming Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "opsflow-intake"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Builds the exact JSON body and signs it: HMAC-SHA256(secret, timestamp + \".\" + body)\nconst crypto = require('crypto');\nconst input = $json.body ?? $json;\nconst body = JSON.stringify({\n  type: 'delivery_request',\n  text: String(input.text ?? ''),\n  external_id: String(input.external_id ?? $execution.id),\n});\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(timestamp + '.' + body).digest('hex');\nreturn { json: { body, timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };"
+      },
+      "name": "Sign request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSFLOW_URL }}/api/webhooks/workflow",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-OpsFlow-Key-Id",
+              "value": "={{ $json.keyId }}"
+            },
+            {
+              "name": "X-OpsFlow-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-OpsFlow-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 90000
+        }
+      },
+      "name": "Submit to OpsFlow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "accepted",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "Accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Alert: OpsFlow rejected the request",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        880,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "name": "Wait for human review",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        -60
+      ],
+      "webhookId": "opsflow-wait"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// GET requests are signed over an empty body.\nconst crypto = require('crypto');\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(timestamp + '.').digest('hex');\nreturn { json: { timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };"
+      },
+      "name": "Sign status request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.OPSFLOW_URL }}/api/webhooks/workflow/{{ $('Submit to OpsFlow').item.json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-OpsFlow-Key-Id",
+              "value": "={{ $json.keyId }}"
+            },
+            {
+              "name": "X-OpsFlow-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-OpsFlow-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "name": "Get status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "s0",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "COMPLETED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "COMPLETED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "s1",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "REJECTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "REJECTED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "s2",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "FAILED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "FAILED"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "name": "Review outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1540,
+        -60
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Notify: confirmation ready (use $json.confirmation)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        -200
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Notify: request rejected",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        -60
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Alert: workflow failed (see $json.failure_reason)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "Replace the three NoOp nodes on the right with your Slack / Email / SMS nodes. `data` in the status response contains the reviewed, approved fields and is only released after a person approves.",
+        "width": 340,
+        "height": 140
+      },
+      "name": "Notification placeholders",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Incoming Request": {
+      "main": [
+        [
+          {
+            "node": "Sign request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign request": {
+      "main": [
+        [
+          {
+            "node": "Submit to OpsFlow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit to OpsFlow": {
+      "main": [
+        [
+          {
+            "node": "Accepted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accepted?": {
+      "main": [
+        [
+          {
+            "node": "Wait for human review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert: OpsFlow rejected the request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for human review": {
+      "main": [
+        [
+          {
+            "node": "Sign status request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign status request": {
+      "main": [
+        [
+          {
+            "node": "Get status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get status": {
+      "main": [
+        [
+          {
+            "node": "Review outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review outcome": {
+      "main": [
+        [
+          {
+            "node": "Notify: confirmation ready (use $json.confirmation)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify: request rejected",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert: workflow failed (see $json.failure_reason)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for human review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 172800
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

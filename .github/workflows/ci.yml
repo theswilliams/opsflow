@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: opsflow_test
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: opsflow_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U opsflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Tests use this server instead of starting an embedded one.
+      TEST_DATABASE_URL: postgresql://opsflow_test:ci-only-password@localhost:5432/opsflow_test
+      DATABASE_URL: postgresql://opsflow_test:ci-only-password@localhost:5432/opsflow_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm audit --audit-level=high
+      - name: Production build
+        run: npm run build
+        env:
+          # Build-time placeholders only; no real secrets are used in CI.
+          APP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=

@@ -46,7 +46,9 @@ export async function requireUser(): Promise<SessionUser> {
   return user;
 }
 
+/** See clientIpFrom in the webhook handler: forwarded headers are only trusted when TRUST_PROXY=true. */
 export async function clientIp(): Promise<string> {
+  if (process.env.TRUST_PROXY !== "true") return "direct";
   const h = await headers();
   return h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip") || "unknown";
 }

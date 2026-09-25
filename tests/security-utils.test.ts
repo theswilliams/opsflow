@@ -83,6 +83,24 @@ describe("document upload handling", () => {
     await expect(extractDocumentText(file("not really a pdf", "fake.pdf", "application/pdf"))).rejects.toMatchObject({ userMessage: expect.stringMatching(/valid PDF/i) });
   });
 
+  it("extracts text from a real PDF and rejects a corrupt one", async () => {
+    const stream = "BT /F1 12 Tf 72 720 Td (Customer: Acme Supply) Tj 0 -16 Td (2 pallets of brick to 10 Main Street) Tj ET";
+    const pdf = [
+      "%PDF-1.4",
+      "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
+      "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
+      "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj",
+      `4 0 obj<</Length ${stream.length}>>stream\n${stream}\nendstream endobj`,
+      "5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj",
+      "trailer<</Root 1 0 R/Size 6>>",
+      "%%EOF",
+    ].join("\n");
+    const ok = await extractDocumentText(file(pdf, "order.pdf", "application/pdf"));
+    expect(ok.mimeType).toBe("application/pdf");
+    expect(ok.text).toContain("Customer: Acme Supply");
+    await expect(extractDocumentText(file("%PDF-1.4\ngarbage that is not a pdf", "bad.pdf"))).rejects.toBeInstanceOf(DocumentError);
+  });
+
   it("recognises images and reports that OCR is not enabled (architecture placeholder)", async () => {
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
     await expect(extractDocumentText(file(png, "scan.png", "image/png"))).rejects.toMatchObject({ userMessage: expect.stringMatching(/OCR/) });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { MAX_INPUT_CHARS } from "@/lib/ai/extract";
 import type { ExtractedFields } from "@/lib/ai/schema";
+import { sha256 } from "@/lib/crypto";
 import { getEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { RateLimiter } from "@/lib/rate-limit";
@@ -51,7 +52,12 @@ export function toResponse(h: Handled, requestId: string): Response {
   });
 }
 
+/**
+ * Forwarded-for headers are client-controlled unless a trusted reverse proxy sets them.
+ * They are only honoured when TRUST_PROXY=true; otherwise every caller shares one "direct" bucket.
+ */
 export function clientIpFrom(request: Request): string {
+  if (process.env.TRUST_PROXY !== "true") return "direct";
   return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown";
 }
 
@@ -170,7 +176,9 @@ export async function handleWorkflowPost(request: Request, getDeps: () => Workfl
     if (headerKey !== null && !IDEMPOTENCY.test(headerKey)) {
       return toResponse(err(400, "invalid_idempotency_key", "Idempotency-Key must be 1–200 characters of [A-Za-z0-9_.:@-]."), requestId);
     }
-    const idempotencyKey = headerKey ?? payload.data.external_id;
+    // Without an explicit key, the signature itself is the key: replaying a captured request within the
+    // timestamp window returns the original workflow instead of creating a duplicate.
+    const idempotencyKey = headerKey ?? payload.data.external_id ?? `sig:${sha256(request.headers.get("x-opsflow-signature") ?? "").slice(0, 40)}`;
 
     const created = await createWorkflow(deps, {
       userId: auth.userId,
