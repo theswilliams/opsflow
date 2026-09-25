@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  --color-ink: #0f1b2d;
+  --color-ink-2: #172740;
+  --color-canvas: #f4f6f9;
+  --color-line: #dfe4ec;
+  --color-brand: #1f5ed6;
+  --color-brand-dark: #1848a8;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--color-canvas);
+    color: #1c2636;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 {
+    letter-spacing: -0.01em;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  ::selection {
+    background: #cfe0ff;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-line bg-white shadow-[0_1px_2px_rgba(15,27,45,0.04)];
+  }
+  .card-header {
+    @apply flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3 sm:px-5;
+  }
+  .card-title {
+    @apply text-[13px] font-semibold uppercase tracking-wide text-slate-600;
+  }
+  .card-body {
+    @apply px-4 py-4 sm:px-5;
+  }
+
+  .btn {
+    @apply inline-flex min-h-9 items-center justify-center gap-2 rounded-md border px-3.5 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply border-brand bg-brand text-white hover:bg-brand-dark;
+  }
+  .btn-secondary {
+    @apply border-slate-300 bg-white text-slate-800 hover:bg-slate-50;
+  }
+  .btn-danger {
+    @apply border-red-300 bg-white text-red-700 hover:bg-red-50;
+  }
+  .btn-success {
+    @apply border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800;
+  }
+
+  .input {
+    @apply block min-h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 disabled:bg-slate-100;
+  }
+  .input[aria-invalid="true"] {
+    @apply border-red-500;
+  }
+  .label {
+    @apply mb-1 block text-[13px] font-medium text-slate-700;
+  }
+  .hint {
+    @apply mt-1 text-xs text-slate-500;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium;
+  }
+
+  .th {
+    @apply px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500;
+  }
+  .td {
+    @apply px-4 py-3 align-middle;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

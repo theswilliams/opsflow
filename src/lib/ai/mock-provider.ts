@@ -188,7 +188,7 @@ export function extractDeliveryRequest(text: string, referenceDate: string): Ext
   // Contact ----------------------------------------------------------------
   let contactName: string | null = null;
   let contactPhone: string | null = null;
-  const nameMatch = /\b(?:call|contact|ask for|text|attn:?|attention:?)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/.exec(text);
+  const nameMatch = /\b(?:[Cc]all|[Cc]ontact|[Aa]sk for|[Tt]ext|[Aa]ttn:?|[Aa]ttention:?)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/.exec(text);
   const phoneMatch = /(?:\+?1[\s.-]?)?\(?\b\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/.exec(text);
   if (nameMatch?.[1]) {
     contactName = nameMatch[1];

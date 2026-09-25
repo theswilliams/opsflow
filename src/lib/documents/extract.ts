@@ -35,7 +35,6 @@ const isImage = (b: Uint8Array) =>
 
 /** Strips path components and control characters from a client-supplied file name. */
 export function safeFileName(name: string): string {
-  // eslint-disable-next-line no-control-regex
   return (name.split(/[\\/]/).pop() ?? "upload").replace(/[\u0000-\u001F<>:"|?*]/g, "").slice(0, 120) || "upload";
 }
 

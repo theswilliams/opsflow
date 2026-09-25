@@ -221,6 +221,33 @@ describe("edits", () => {
     await expect(editWorkflowFields(testDeps(), { ...args, updates: { customer: "ABC Building Supplies" } })).rejects.toMatchObject({ code: "NO_CHANGES" });
   });
 
+  it("regression: values that merely round-trip through jsonb (key order) are not reported as edits", async () => {
+    const user = await makeUser();
+    const { id } = await makeWorkflow(user.id);
+    const args = { workflowId: id, userId: user.id, actor: actorFor(user.id) };
+    await expect(
+      editWorkflowFields(testDeps(), { ...args, updates: { items: [{ unit: "pallets", quantity: 4, description: "roofing shingles" }], customer: "ABC Building Supplies" } }),
+    ).rejects.toMatchObject({ code: "NO_CHANGES" });
+  });
+
+  it("regression: explicit times supersede a general window and resolve its ambiguity and contact concern", async () => {
+    const user = await makeUser();
+    const { id } = await makeWorkflow(user.id);
+    // The review form always posts the current window ("morning") alongside the new times.
+    const { changes } = await editWorkflowFields(testDeps(), {
+      workflowId: id,
+      userId: user.id,
+      actor: actorFor(user.id),
+      updates: { requested_time_window: "morning", requested_time_start: "09:00", requested_time_end: "11:00", contact_phone: "519-555-0142" },
+    });
+    expect(changes.map((c) => c.field)).toContain("requested_time_window");
+    const after = await db.extractedData.findUniqueOrThrow({ where: { workflowId: id } });
+    const status = after.fieldStatus as Record<string, { status: string; confidence: string }>;
+    expect(after.fields).toMatchObject({ requested_time_window: "specific" });
+    expect(status.requested_time_window).toMatchObject({ status: "known", confidence: "high" });
+    expect(status.contact_name).toMatchObject({ confidence: "high" });
+  });
+
   it("an edit that introduces an error blocks approval", async () => {
     const user = await makeUser();
     const { id } = await makeWorkflow(user.id);

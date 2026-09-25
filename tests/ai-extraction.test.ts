@@ -62,6 +62,15 @@ describe("mock extraction: missing / ambiguous input", () => {
     expect(e.field_assessments.requested_date.status).toBe("ambiguous");
   });
 
+  it("finds a contact name regardless of capitalisation of the cue word", () => {
+    for (const cue of ["Call", "call", "Contact", "Ask for"]) {
+      const e = extractDeliveryRequest(`Customer: Acme
+2 pallets of brick to 10 Main Street, Toronto, Ontario tomorrow at 9am. ${cue} Sam 519-555-0100.`, TODAY);
+      expect(e.fields.contact_name, cue).toBe("Sam");
+      expect(e.fields.contact_phone).toBe("519-555-0100");
+    }
+  });
+
   it("parses explicit time ranges", () => {
     const e = extractDeliveryRequest("Customer: Acme\n5 pallets of tile to 10 Main Street, Toronto, Ontario on 2026-10-05 between 9 and 11am", TODAY);
     expect(e.fields.requested_time_start).toBe("09:00");

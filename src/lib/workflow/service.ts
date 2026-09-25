@@ -315,7 +315,14 @@ export interface FieldChange {
   to: unknown;
 }
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+/** Key-order-insensitive: PostgreSQL jsonb does not preserve key order. */
+const canonical = (v: unknown): unknown =>
+  Array.isArray(v)
+    ? v.map(canonical)
+    : v && typeof v === "object"
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, canonical(x)]))
+      : v;
+const same = (a: unknown, b: unknown) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 
 export function diffFields(before: ExtractedFields, after: ExtractedFields): FieldChange[] {
   return (Object.keys(after) as (keyof ExtractedFields)[])
@@ -335,9 +342,8 @@ export async function editWorkflowFields(deps: WorkflowDeps, args: { workflowId:
 
   const current = workflow.extracted.fields as unknown as ExtractedFields;
   const next: ExtractedFields = { ...current, ...updates };
-  if (updates.requested_time_start && updates.requested_time_window === undefined && next.requested_time_window !== "specific") {
-    next.requested_time_window = "specific";
-  }
+  // An explicit start time supersedes a general window such as "morning".
+  if (next.requested_time_start && next.requested_time_window !== "specific") next.requested_time_window = "specific";
   const changes = diffFields(current, next);
   if (changes.length === 0) throw new WorkflowError("NO_CHANGES", "No changes to save.");
 
@@ -346,6 +352,10 @@ export async function editWorkflowFields(deps: WorkflowDeps, args: { workflowId:
   for (const { field } of changes) {
     const key = field as keyof StoredAssessments;
     assessments[key] = { status: "known", confidence: "high", evidence: null, note: "Set by a human reviewer.", edited: true };
+  }
+  // Supplying a phone number resolves the "named contact but no way to reach them" concern.
+  if (changedFields.has("contact_phone") && next.contact_phone && next.contact_name && !changedFields.has("contact_name")) {
+    assessments.contact_name = { ...assessments.contact_name, confidence: "high", note: null };
   }
   const ambiguities = (workflow.extracted.ambiguities as unknown as Extraction["ambiguities"]).filter((a) => !changedFields.has(a.field));
 
