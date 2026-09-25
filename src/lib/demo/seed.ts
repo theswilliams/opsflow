@@ -41,6 +41,7 @@ export interface SeedResult {
  */
 export async function seedDemo(db: Db, options: { password: string; now?: Date; timezone?: string; withCredential?: boolean }): Promise<SeedResult> {
   const now = options.now ?? new Date();
+  const startedAt = Date.now();
   const timezone = options.timezone ?? "America/Toronto";
   const passwordHash = await hashPassword(options.password);
   const user = await db.user.upsert({
@@ -57,7 +58,8 @@ export async function seedDemo(db: Db, options: { password: string; now?: Date; 
   const base = defaultDeps({
     db,
     ai: () => new MockAIProvider(),
-    now: () => now,
+    // A running clock anchored at `now`: dates stay deterministic, but jobs created a moment later are still "due".
+    now: () => new Date(now.getTime() + (Date.now() - startedAt)),
     timezone,
     extraction: { retryDelayMs: 0 },
     budget: { dailyRequests: 0, dailyTokens: 0, monthlyCostUsd: 0 },

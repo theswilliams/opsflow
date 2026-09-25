@@ -22,11 +22,15 @@ export function proxy(request: NextRequest) {
     "frame-ancestors 'none'",
   ].join("; ");
 
+  // CSP_MODE=report-only lets a deployment observe violations before enforcing; "off" exists for diagnosis only.
+  const mode = process.env.CSP_MODE ?? "enforce";
+  if (mode === "off") return NextResponse.next();
+  const headerName = mode === "report-only" ? "Content-Security-Policy-Report-Only" : "Content-Security-Policy";
   const headers = new Headers(request.headers);
   headers.set("x-nonce", nonce);
-  headers.set("Content-Security-Policy", csp);
+  headers.set(headerName, csp);
   const response = NextResponse.next({ request: { headers } });
-  response.headers.set("Content-Security-Policy", csp);
+  response.headers.set(headerName, csp);
   return response;
 }
 

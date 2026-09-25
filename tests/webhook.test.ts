@@ -6,7 +6,7 @@ import { createCredential, revokeCredential } from "@/lib/webhook/credentials";
 import { handleWorkflowGet, handleWorkflowPost, MAX_BODY_BYTES, resetWebhookLimiters } from "@/lib/webhook/handler";
 import { signPayload, verifySignature } from "@/lib/webhook/signature";
 import { createWorkflow } from "@/lib/workflow/service";
-import { approveCurrent, DELIVERY_TEXT, makeUser, ScriptedProvider, testDeps } from "./helpers";
+import { approveCurrent, DELIVERY_TEXT, makeUser, peerH, ScriptedProvider, testDeps } from "./helpers";
 
 const db = getDb();
 const URL_ = "http://localhost:3000/api/webhooks/workflow";
@@ -369,7 +369,7 @@ describe("webhook · payload handling", () => {
 
 describe("F2 · rate limiting isolates clients and tenants", () => {
   const badFrom = (cred: Cred, peer?: string) =>
-    post(signedPost(cred, payload(), { signWith: "bad", headers: peer ? { "x-opsflow-peer": peer } : {} }));
+    post(signedPost(cred, payload(), { signWith: "bad", headers: peer ? { ...peerH(peer) } : {} }));
 
   it("attacker's bad signatures against a victim's PUBLIC key id never block the victim's valid request", async () => {
     const { cred } = await setup("victim");
@@ -378,13 +378,22 @@ describe("F2 · rate limiting isolates clients and tenants", () => {
     expect(statuses.slice(0, 20).every((s) => s === 401)).toBe(true);
     expect(statuses.slice(20).every((s) => s === 429)).toBe(true); // the attacker throttles ONLY themselves
     // Victim from a different address:
-    expect((await post(signedPost(cred, payload(), { headers: { "x-opsflow-peer": "203.0.113.7" } }))).status).toBe(201);
+    expect((await post(signedPost(cred, payload(), { headers: { ...peerH("203.0.113.7") } }))).status).toBe(201);
   });
 
   it("and even when the victim's address is unknown, the attacker's throttling does not touch them", async () => {
     const { cred } = await setup("victim2");
     for (let i = 0; i < 25; i++) await badFrom(cred, "198.51.100.66");
     expect((await post(signedPost(cred, payload()))).status).toBe(201);
+  });
+
+  it("REGRESSION (found in the second audit): an attacker who forges the peer header cannot frame a victim's address", async () => {
+    const { cred } = await setup("frame");
+    // App reached WITHOUT the custom server (or a client guessing header names): forged, un-MAC'd peer header.
+    const forged = () => post(signedPost(cred, payload(), { signWith: "bad", headers: { "x-opsflow-peer": "203.0.113.7", "x-opsflow-peer-mac": "forged" } }));
+    for (let i = 0; i < 30; i++) expect((await forged()).status).toBe(401); // never 429: the header is ignored, nothing is counted against 203.0.113.7
+    // The real victim at 203.0.113.7 (genuinely stamped by the server) is not blocked:
+    expect((await post(signedPost(cred, payload(), { headers: { ...peerH("203.0.113.7") } }))).status).toBe(201);
   });
 
   it("with an unknown client address the failure limiter is not applied at all (no shared 'direct' bucket)", async () => {
@@ -399,10 +408,10 @@ describe("F2 · rate limiting isolates clients and tenants", () => {
     const { cred } = await setup("xff");
     // No trusted proxy configured: forwarding headers are ignored and the (custom-server) peer is authoritative.
     const codes: number[] = [];
-    for (let i = 0; i < 25; i++) codes.push((await post(signedPost(cred, payload(), { signWith: "bad", headers: { "x-opsflow-peer": "198.51.100.66", "x-forwarded-for": `10.0.0.${i}` } }))).status);
+    for (let i = 0; i < 25; i++) codes.push((await post(signedPost(cred, payload(), { signWith: "bad", headers: { ...peerH("198.51.100.66"), "x-forwarded-for": `10.0.0.${i}` } }))).status);
     expect(codes.slice(-3)).toEqual([429, 429, 429]);
     // Victim's real address is untouched even if the attacker claims it via XFF:
-    const ok = await post(signedPost(cred, payload(), { headers: { "x-opsflow-peer": "203.0.113.7", "x-forwarded-for": "198.51.100.66" } }));
+    const ok = await post(signedPost(cred, payload(), { headers: { ...peerH("203.0.113.7"), "x-forwarded-for": "198.51.100.66" } }));
     expect(ok.status).toBe(201);
   });
 
@@ -410,13 +419,13 @@ describe("F2 · rate limiting isolates clients and tenants", () => {
     process.env.TRUSTED_PROXIES = "192.0.2.10";
     const { cred } = await setup("proxy");
     const viaProxy = (client: string, prefix = "") =>
-      post(signedPost(cred, payload(), { signWith: "bad", headers: { "x-opsflow-peer": "192.0.2.10", "x-forwarded-for": `${prefix}${client}` } }));
+      post(signedPost(cred, payload(), { signWith: "bad", headers: { ...peerH("192.0.2.10"), "x-forwarded-for": `${prefix}${client}` } }));
     const codes: number[] = [];
     // attacker forges the LEFT of the header; the proxy appended the true address on the right.
     for (let i = 0; i < 25; i++) codes.push((await viaProxy("198.51.100.66", `10.9.9.${i}, `)).status);
     expect(codes.slice(-2)).toEqual([429, 429]);
     // A different real client behind the same proxy is unaffected.
-    expect((await post(signedPost(cred, payload(), { headers: { "x-opsflow-peer": "192.0.2.10", "x-forwarded-for": "203.0.113.7" } }))).status).toBe(201);
+    expect((await post(signedPost(cred, payload(), { headers: { ...peerH("192.0.2.10"), "x-forwarded-for": "203.0.113.7" } }))).status).toBe(201);
   });
 
   describe("tenant capacity", () => {

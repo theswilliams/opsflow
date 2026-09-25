@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@/generated/prisma/client";
 import type { JobType } from "@/generated/prisma/enums";
 import type { Db } from "@/lib/db";
@@ -29,31 +30,28 @@ export class LeaseLostError extends Error {
   }
 }
 
+/**
+ * Enqueue (or re-queue) the single job for (workflow, type) in ONE atomic statement:
+ *  - no job yet            → insert QUEUED
+ *  - job SUCCEEDED/FAILED  → reset to QUEUED (a manual retry)
+ *  - job QUEUED/RUNNING    → no-op (idempotent; never disturbs a live lease)
+ * `INSERT … ON CONFLICT … DO UPDATE … WHERE` makes concurrent callers (user retry, sweeper, webhook) race-free.
+ */
 export async function enqueueJob(
   client: Client,
   args: { userId: string; workflowId: string; type: JobType; maxAttempts: number; resetAttempts?: boolean; runAfter?: Date },
-) {
-  const existing = await client.job.findUnique({ where: { workflowId_type: { workflowId: args.workflowId, type: args.type } } });
-  if (!existing) {
-    return client.job.create({
-      data: { userId: args.userId, workflowId: args.workflowId, type: args.type, maxAttempts: args.maxAttempts, runAfter: args.runAfter ?? new Date() },
-    });
-  }
-  // Already waiting or running: idempotent no-op.
-  if (existing.status === "QUEUED" || existing.status === "RUNNING") return existing;
-  return client.job.update({
-    where: { id: existing.id },
-    data: {
-      status: "QUEUED",
-      runAfter: args.runAfter ?? new Date(),
-      leaseOwner: null,
-      leaseExpiresAt: null,
-      finishedAt: null,
-      lastError: null,
-      maxAttempts: args.maxAttempts,
-      ...(args.resetAttempts === false ? {} : { attempts: 0 }),
-    },
-  });
+): Promise<void> {
+  const now = new Date();
+  const runAfter = args.runAfter ?? now;
+  const resetAttempts = args.resetAttempts !== false;
+  await client.$executeRaw(Prisma.sql`
+    INSERT INTO "Job" ("id", "workflowId", "userId", "type", "status", "attempts", "maxAttempts", "runAfter", "createdAt", "updatedAt")
+    VALUES (${randomUUID()}, ${args.workflowId}, ${args.userId}, ${args.type}::"JobType", 'QUEUED', 0, ${args.maxAttempts}, ${runAfter}, ${now}, ${now})
+    ON CONFLICT ("workflowId", "type") DO UPDATE SET
+      "status" = 'QUEUED', "runAfter" = EXCLUDED."runAfter", "leaseOwner" = NULL, "leaseExpiresAt" = NULL,
+      "finishedAt" = NULL, "lastError" = NULL, "maxAttempts" = EXCLUDED."maxAttempts", "updatedAt" = EXCLUDED."updatedAt",
+      "attempts" = CASE WHEN ${resetAttempts} THEN 0 ELSE "Job"."attempts" END
+    WHERE "Job"."status" IN ('SUCCEEDED', 'FAILED')`);
 }
 
 interface ClaimRow {

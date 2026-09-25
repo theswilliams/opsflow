@@ -146,3 +146,30 @@ describe("F6 · configurable budgets stop spend", () => {
     void TODAY;
   });
 });
+
+describe("F6 · the budget cannot be overshot by concurrency (reserve-then-call)", () => {
+  it("10 workflows processed at the same time against a budget of 3 requests: exactly 3 reach the provider", async () => {
+    const user = await makeUser("f6conc");
+    const { createWorkflow } = await import("@/lib/workflow/service");
+    const { drainJobs } = await import("@/lib/jobs/worker");
+    let calls = 0;
+    const slow: AIProvider = {
+      name: "mock",
+      isMock: true,
+      extract: async (req) => {
+        calls++;
+        await new Promise((r) => setTimeout(r, 60)); // widen the race window
+        return new MockAIProvider().extract(req);
+      },
+    };
+    const mk = (i: number) => testDeps({ ai: slow, workerId: `conc-${i}`, budget: { dailyRequests: 3, dailyTokens: 0, monthlyCostUsd: 0 } });
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) ids.push((await createWorkflow(mk(0), { userId: user.id, actor: actorOf(user.id), source: "WEBHOOK", kind: "text", text: `${DELIVERY_TEXT}\nRef ${i}` })).id);
+    await Promise.all(Array.from({ length: 10 }, (_, i) => drainJobs(mk(i), 10)));
+    const statuses = await Promise.all(ids.map(async (id) => (await db.workflow.findUniqueOrThrow({ where: { id } })).status));
+    expect(statuses.filter((s) => s === "REVIEW_REQUIRED")).toHaveLength(3);
+    expect(statuses.filter((s) => s === "FAILED")).toHaveLength(7);
+    expect(calls).toBe(3);
+    expect(await db.aiUsage.count({ where: { userId: user.id } })).toBe(3);
+  });
+});

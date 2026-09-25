@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { revokeCredentialAction } from "@/app/actions/credentials";
 import { CredentialForm } from "@/components/credential-form";
+import { DeleteAccountForm } from "@/components/delete-account-form";
 import { EmptyState, PageHeader } from "@/components/ui";
 import { isDemoMode } from "@/lib/ai";
 import { requireUser } from "@/lib/auth/current-user";
@@ -68,7 +69,21 @@ curl -X POST ${env.APP_URL}/api/webhooks/workflow \\
           </section>
         </div>
 
-        <section aria-labelledby="env-h" className="card self-start">
+        <div className="space-y-6 self-start">
+        <section aria-labelledby="data-h" className="card">
+          <div className="card-header"><h2 id="data-h" className="card-title">Your data</h2></div>
+          <div className="card-body space-y-3 text-sm text-slate-700">
+            <p>
+              OpsFlow keeps the documents you submit, the data extracted from them, your review decisions and an audit trail.
+              {env.RETENTION_DAYS > 0 ? ` Documents and extracted data are erased ${env.RETENTION_DAYS} days after a request is completed, rejected or failed.` : " Automatic purging is currently disabled."}{" "}
+              Audit events are retained. See <code className="font-mono text-xs">docs/DATA.md</code>.
+            </p>
+            <a href="/api/account/export" className="btn btn-secondary">Download my data (JSON)</a>
+            <DeleteAccountForm />
+          </div>
+        </section>
+
+        <section aria-labelledby="env-h" className="card">
           <div className="card-header"><h2 id="env-h" className="card-title">Runtime</h2></div>
           <dl className="divide-y divide-line text-sm">
             <div className="px-4 py-3 sm:px-5">
@@ -85,6 +100,7 @@ curl -X POST ${env.APP_URL}/api/webhooks/workflow \\
             </div>
           </dl>
         </section>
+        </div>
       </div>
     </>
   );

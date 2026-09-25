@@ -1,12 +1,12 @@
-import { AlertTriangle, ArrowRight, CheckCircle2, FilePlus2, Hourglass, Layers, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, Bell, CheckCircle2, FilePlus2, Hourglass, Layers, XCircle } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { EmptyState, PageHeader, StatusPill } from "@/components/ui";
 import { Pagination, WorkflowFilters, WorkflowTable } from "@/components/workflow-table";
 import { requireUser } from "@/lib/auth/current-user";
 import { getDb } from "@/lib/db";
-import { formatDateTime, formatTime, relativeTime, shortId } from "@/lib/format";
-import { attentionRequired, dashboardStats, listWorkflows, recentActivity } from "@/lib/workflow/queries";
+import { ageLabel, ageTone, formatDateTime, formatTime, relativeTime, shortId } from "@/lib/format";
+import { attentionRequired, dashboardStats, listWorkflows, recentActivity, recentNotifications } from "@/lib/workflow/queries";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -32,11 +32,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Se
   const sp = await searchParams;
   const page = Number(sp.page) || 1;
   const db = getDb();
-  const [stats, attention, activity, list] = await Promise.all([
+  const [stats, attention, activity, list, notifications] = await Promise.all([
     dashboardStats(db, user.id),
     attentionRequired(db, user.id),
     recentActivity(db, user.id),
     listWorkflows(db, user.id, { q: sp.q, status: sp.status, page }),
+    recentNotifications(db, user.id),
   ]);
 
   return (
@@ -82,6 +83,15 @@ export default async function DashboardPage({ searchParams }: { searchParams: Se
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
+                      {w.status === "REVIEW_REQUIRED" && w.reviewRequiredAt && (
+                        <span
+                          className={`hidden text-xs font-medium sm:inline ${ageTone(w.reviewRequiredAt) === "urgent" ? "text-red-700" : ageTone(w.reviewRequiredAt) === "warn" ? "text-amber-800" : "text-slate-500"}`}
+                          title={ageTone(w.reviewRequiredAt) === "urgent" ? "Overdue: waiting more than 72 hours" : ageTone(w.reviewRequiredAt) === "warn" ? "Waiting more than 24 hours" : "Time since review was requested"}
+                        >
+                          {ageTone(w.reviewRequiredAt) === "urgent" ? "Overdue · " : ""}
+                          {ageLabel(w.reviewRequiredAt)}
+                        </span>
+                      )}
                       <StatusPill status={w.status} />
                       <ArrowRight aria-hidden className="size-4 text-slate-400" />
                     </div>
@@ -122,6 +132,27 @@ export default async function DashboardPage({ searchParams }: { searchParams: Se
           )}
         </section>
       </div>
+
+      <section aria-labelledby="notif-h" className="card mt-6">
+        <div className="card-header">
+          <h2 id="notif-h" className="card-title flex items-center gap-2"><Bell aria-hidden className="size-4" /> Review notifications</h2>
+          <span className="text-xs text-slate-500">Simulated — a real deployment would email or message your dispatch team</span>
+        </div>
+        {notifications.length === 0 ? (
+          <EmptyState title="No notifications yet">You are notified when a request needs review.</EmptyState>
+        ) : (
+          <ul className="divide-y divide-line">
+            {notifications.map((n) => (
+              <li key={n.id} className="flex items-start justify-between gap-3 px-4 py-2.5 text-sm sm:px-5">
+                <p className="min-w-0 text-slate-800">
+                  {n.workflowId ? <Link href={`/workflows/${n.workflowId}`} className="hover:underline">{n.message}</Link> : n.message}
+                </p>
+                <time dateTime={n.createdAt.toISOString()} className="shrink-0 text-xs text-slate-500">{relativeTime(n.createdAt)}</time>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <section aria-labelledby="table-h" className="card mt-6">
         <div className="card-header">

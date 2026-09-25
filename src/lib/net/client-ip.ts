@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 
 /**
@@ -6,8 +7,10 @@ import { BlockList, isIP } from "node:net";
  * Trust model
  * -----------
  * 1. **Custom server (`server.mjs`, used by `npm start`)** stamps every request with the real TCP peer in
- *    `x-opsflow-peer` and strips any client-supplied copy. That is the only source of truth for "who is
- *    connected". If the peer is NOT in TRUSTED_PROXIES, forwarding headers are ignored completely.
+ *    `x-opsflow-peer`, together with `x-opsflow-peer-mac` = HMAC(per-process secret, peer), and strips any
+ *    client-supplied copies. The MAC is what makes the header trustworthy: if the app is run WITHOUT the custom
+ *    server (plain `next start`, a platform runtime) a client could send `x-opsflow-peer` itself, but it cannot
+ *    produce a valid MAC, so the header is ignored. That is the only source of truth for "who is connected". If the peer is NOT in TRUSTED_PROXIES, forwarding headers are ignored completely.
  *    If the peer IS a trusted proxy, `X-Forwarded-For` is walked from the RIGHT (the hops closest to us,
  *    appended by infrastructure we control) and the first address that is not itself a trusted proxy wins.
  *    The leftmost entry is client-controlled and is never used on its own.
@@ -20,6 +23,20 @@ import { BlockList, isIP } from "node:net";
 export interface ClientIpConfig {
   trustedProxies?: string;
   trustProxyHops?: number;
+  /** Per-process secret shared with server.mjs (OPSFLOW_PEER_SECRET). Without it the peer header is never trusted. */
+  peerSecret?: string;
+}
+
+export const signPeer = (secret: string, peer: string) => createHmac("sha256", secret).update(peer).digest("hex");
+
+function verifiedPeer(headers: Headers, secret: string | undefined): string | null {
+  const raw = headers.get("x-opsflow-peer");
+  const mac = headers.get("x-opsflow-peer-mac");
+  if (!secret || !raw || !mac) return null;
+  const expected = Buffer.from(signPeer(secret, raw));
+  const given = Buffer.from(mac);
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
+  return normalizeIp(raw);
 }
 
 export function normalizeIp(raw: string | null | undefined): string | null {
@@ -58,7 +75,7 @@ export function resolveClientIp(headers: Headers, config: ClientIpConfig = {}): 
     .map((s) => normalizeIp(s))
     .filter((s): s is string => Boolean(s));
 
-  const peer = normalizeIp(headers.get("x-opsflow-peer"));
+  const peer = verifiedPeer(headers, config.peerSecret);
   if (peer) {
     const trusted = buildTrustList(config.trustedProxies);
     if (!isTrusted(trusted, peer)) return peer;
@@ -78,5 +95,6 @@ export function clientIpFromRequest(headers: Headers): string | null {
   return resolveClientIp(headers, {
     trustedProxies: process.env.TRUSTED_PROXIES,
     trustProxyHops: Number(process.env.TRUST_PROXY_HOPS || 0),
+    peerSecret: process.env.OPSFLOW_PEER_SECRET,
   });
 }

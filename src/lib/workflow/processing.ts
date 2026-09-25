@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { extractWorkflowData, ExtractionError, type ExtractionOutcome } from "@/lib/ai/extract";
 import type { Extraction, ExtractedFields, FieldAssessments } from "@/lib/ai/schema";
-import { assertWithinBudget, recordUsage } from "@/lib/ai/usage";
+import { completeUsage, reserveUsage } from "@/lib/ai/usage";
 import { todayIn } from "@/lib/dates";
 import { DocumentError, parsePdfBytes } from "@/lib/documents/extract";
 import { assertLease, finishJob, LeaseLostError, requeueJob, type ClaimedJob } from "@/lib/jobs/queue";
@@ -67,10 +67,9 @@ export async function processWorkflowJob(deps: WorkflowDeps, job: ClaimedJob): P
       { text, referenceDate },
       {
         ...deps.extraction,
-        beforeAttempt: async () => {
-          await assertWithinBudget(db, userId, deps.budget, deps.now());
-        },
-        onAttempt: (usage) => recordUsage(db, { userId, workflowId, provider: provider.name, usage, prices: deps.prices, now: deps.now() }),
+        // Reserve-then-complete: the budget is checked and one request is counted atomically BEFORE the call.
+        beforeAttempt: () => reserveUsage(db, { userId, workflowId, provider: provider.name, budget: deps.budget, now: deps.now() }),
+        onAttempt: (usage, ticket) => completeUsage(db, ticket as string, usage, deps.prices),
       },
     );
 

@@ -25,6 +25,20 @@ export function relativeTime(d: Date | string, now = Date.now()): string {
   return `${days} d ago`;
 }
 
+/** Compact duration since `d`: "12 min", "3 h", "2 d". */
+export function ageLabel(d: Date | string, now = Date.now()): string {
+  const minutes = Math.max(0, Math.round((now - new Date(d).getTime()) / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
+}
+
+/** Urgency of a request that has been waiting for review: >24 h needs a nudge, >72 h is overdue. */
+export function ageTone(d: Date | string, now = Date.now()): "normal" | "warn" | "urgent" {
+  const hours = (now - new Date(d).getTime()) / 3_600_000;
+  return hours > 72 ? "urgent" : hours > 24 ? "warn" : "normal";
+}
+
 export const shortId = (id: string) => id.slice(-8).toUpperCase();
 
 export const TYPE_LABEL: Record<string, string> = { DELIVERY_REQUEST: "Delivery request" };

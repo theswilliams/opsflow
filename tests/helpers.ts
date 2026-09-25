@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { signPeer } from "@/lib/net/client-ip";
 import type { AIProvider, ExtractionRequest, ProviderResponse } from "@/lib/ai/provider";
 import { MockAIProvider } from "@/lib/ai/mock-provider";
 import { getDb } from "@/lib/db";
@@ -56,6 +57,10 @@ export async function makeUser(label = "u") {
     data: { email: `${label}-${randomBytes(6).toString("hex")}@example.test`, name: `User ${label}`, passwordHash: "x" },
   });
 }
+
+/** Stand-in for what server.mjs stamps on a request: the real peer address plus its MAC. */
+export const PEER_SECRET = "test-peer-secret";
+export const peerH = (ip: string) => ({ "x-opsflow-peer": ip, "x-opsflow-peer-mac": signPeer(PEER_SECRET, ip) });
 
 export const actorOf = (userId: string) => ({ type: "USER", id: userId }) as const;
 

@@ -6,12 +6,13 @@ import { NextRequest } from "next/server";
 import { getAIProvider, ProviderConfigError } from "@/lib/ai";
 import { getDb } from "@/lib/db";
 import { getEnv, parseEnv, resetEnvCacheForTests } from "@/lib/env";
-import { buildTrustList, normalizeIp, resolveClientIp } from "@/lib/net/client-ip";
+import { buildTrustList, normalizeIp, resolveClientIp as resolveRaw } from "@/lib/net/client-ip";
 import { proxy } from "@/proxy";
 import { appLimiters, loginAllowed, recordLoginFailure, recordLoginSuccess, registrationAllowed, resetAppLimiters } from "@/lib/rate-limits";
-import { approveCurrent, DELIVERY_TEXT, makeUser, makeWorkflow, testDeps } from "./helpers";
+import { approveCurrent, DELIVERY_TEXT, makeUser, makeWorkflow, PEER_SECRET, peerH, testDeps } from "./helpers";
 
 const h = (init: Record<string, string>) => new Headers(init);
+const resolveClientIp = (headers: Headers, cfg: Parameters<typeof resolveRaw>[1] = {}) => resolveRaw(headers, { peerSecret: PEER_SECRET, ...cfg });
 const BASE = { DATABASE_URL: "x", APP_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64") };
 
 describe("client address resolution (trust model)", () => {
@@ -22,29 +23,44 @@ describe("client address resolution (trust model)", () => {
   });
 
   it("uses the real socket peer, ignoring any forwarding header, when no proxy is trusted", () => {
-    expect(resolveClientIp(h({ "x-opsflow-peer": "198.51.100.5", "x-forwarded-for": "9.9.9.9, 8.8.8.8" }))).toBe("198.51.100.5");
-    expect(resolveClientIp(h({ "x-opsflow-peer": "::ffff:198.51.100.5" }))).toBe("198.51.100.5");
-    expect(resolveClientIp(h({ "x-opsflow-peer": "2001:db8::1" }))).toBe("2001:db8::1");
+    expect(resolveClientIp(h({ ...peerH("198.51.100.5"), "x-forwarded-for": "9.9.9.9, 8.8.8.8" }))).toBe("198.51.100.5");
+    expect(resolveClientIp(h({ ...peerH("::ffff:198.51.100.5") }))).toBe("198.51.100.5");
+    expect(resolveClientIp(h({ ...peerH("2001:db8::1") }))).toBe("2001:db8::1");
+  });
+
+  it("a client-forged peer header is worthless without the server's MAC (app run without server.mjs, or a spoof attempt)", () => {
+    // 1. no MAC at all
+    expect(resolveClientIp(h({ "x-opsflow-peer": "203.0.113.7" }))).toBeNull();
+    // 2. a MAC computed with the wrong secret
+    expect(resolveRaw(h({ "x-opsflow-peer": "203.0.113.7", "x-opsflow-peer-mac": "deadbeef" }), { peerSecret: PEER_SECRET })).toBeNull();
+    // 3. a valid MAC for a DIFFERENT address cannot be reused for another one
+    const forSomeoneElse = peerH("198.51.100.5");
+    expect(resolveClientIp(h({ "x-opsflow-peer": "203.0.113.7", "x-opsflow-peer-mac": forSomeoneElse["x-opsflow-peer-mac"] }))).toBeNull();
+    // 4. no secret configured (custom server not in use): the header is never trusted, even with a "valid-looking" MAC
+    expect(resolveRaw(h({ ...peerH("203.0.113.7") }), {})).toBeNull();
+    // ...and forged peer + trusted-proxy config cannot smuggle an XFF verdict either
+    expect(resolveRaw(h({ "x-opsflow-peer": "192.0.2.10", "x-forwarded-for": "203.0.113.9" }), { trustedProxies: "192.0.2.10", peerSecret: PEER_SECRET })).toBeNull();
+    expect(resolveClientIp(h({ ...peerH("203.0.113.7") }))).toBe("203.0.113.7"); // the genuine article still works
   });
 
   it("an untrusted peer cannot borrow a trusted proxy's authority by sending forwarding headers", () => {
     const cfg = { trustedProxies: "192.0.2.10" };
-    expect(resolveClientIp(h({ "x-opsflow-peer": "198.51.100.5", "x-forwarded-for": "203.0.113.9" }), cfg)).toBe("198.51.100.5");
+    expect(resolveClientIp(h({ ...peerH("198.51.100.5"), "x-forwarded-for": "203.0.113.9" }), cfg)).toBe("198.51.100.5");
   });
 
   it("behind a trusted proxy the client is the RIGHTMOST untrusted hop, so a forged leftmost entry is useless", () => {
     const cfg = { trustedProxies: "192.0.2.10, 192.0.2.11" };
-    const forged = h({ "x-opsflow-peer": "192.0.2.10", "x-forwarded-for": "6.6.6.6, 203.0.113.9, 192.0.2.11" });
+    const forged = h({ ...peerH("192.0.2.10"), "x-forwarded-for": "6.6.6.6, 203.0.113.9, 192.0.2.11" });
     expect(resolveClientIp(forged, cfg)).toBe("203.0.113.9");
-    expect(resolveClientIp(h({ "x-opsflow-peer": "192.0.2.10", "x-forwarded-for": "192.0.2.11" }), cfg)).toBe("192.0.2.10"); // only proxies → the proxy
-    expect(resolveClientIp(h({ "x-opsflow-peer": "192.0.2.10" }), cfg)).toBe("192.0.2.10");
+    expect(resolveClientIp(h({ ...peerH("192.0.2.10"), "x-forwarded-for": "192.0.2.11" }), cfg)).toBe("192.0.2.10"); // only proxies → the proxy
+    expect(resolveClientIp(h({ ...peerH("192.0.2.10") }), cfg)).toBe("192.0.2.10");
   });
 
   it("supports CIDR ranges and IPv6 in the trust list", () => {
     const cfg = { trustedProxies: "10.0.0.0/8, 2001:db8::/32" };
-    expect(resolveClientIp(h({ "x-opsflow-peer": "10.4.5.6", "x-forwarded-for": "203.0.113.1" }), cfg)).toBe("203.0.113.1");
-    expect(resolveClientIp(h({ "x-opsflow-peer": "2001:db8::5", "x-forwarded-for": "203.0.113.2" }), cfg)).toBe("203.0.113.2");
-    expect(resolveClientIp(h({ "x-opsflow-peer": "11.0.0.1", "x-forwarded-for": "203.0.113.3" }), cfg)).toBe("11.0.0.1");
+    expect(resolveClientIp(h({ ...peerH("10.4.5.6"), "x-forwarded-for": "203.0.113.1" }), cfg)).toBe("203.0.113.1");
+    expect(resolveClientIp(h({ ...peerH("2001:db8::5"), "x-forwarded-for": "203.0.113.2" }), cfg)).toBe("203.0.113.2");
+    expect(resolveClientIp(h({ ...peerH("11.0.0.1"), "x-forwarded-for": "203.0.113.3" }), cfg)).toBe("11.0.0.1");
     const list = buildTrustList("garbage, 10.0.0.1/33x, 192.168.0.0/16");
     expect(list.check("192.168.4.4")).toBe(true);
     expect(list.check("10.0.0.1")).toBe(false);

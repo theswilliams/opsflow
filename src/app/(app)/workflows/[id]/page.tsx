@@ -2,15 +2,18 @@ import { ChevronRight } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { AutoRefresh } from "@/components/auto-refresh";
 import { ExtractedFieldsList, ReviewPanel, type ReviewAssessments } from "@/components/review-panel";
 import { Alert, ConfidenceBadge, StatusPill } from "@/components/ui";
 import { ActionsCard, AiAnalysis, ReviewHistory, SourceCard, Timeline, ValidationCard } from "@/components/workflow-sections";
 import type { ExtractedFields } from "@/lib/ai/schema";
 import { requireUser } from "@/lib/auth/current-user";
 import { getDb } from "@/lib/db";
-import { formatFullDateTime, shortId, SOURCE_LABEL, TYPE_LABEL } from "@/lib/format";
+import { ageLabel, formatFullDateTime, shortId, SOURCE_LABEL, TYPE_LABEL } from "@/lib/format";
 import type { ValidationIssue } from "@/lib/validation/delivery";
+import { defaultDeps } from "@/lib/workflow/core";
 import { getWorkflowDetail } from "@/lib/workflow/queries";
+import { currentValidation } from "@/lib/workflow/service";
 
 export const metadata: Metadata = { title: "Workflow" };
 
@@ -22,15 +25,20 @@ export default async function WorkflowPage({ params }: { params: Promise<{ id: s
   if (!workflow) notFound();
 
   const extracted = workflow.extracted;
-  const validation = workflow.validations[0];
-  const issues = (validation?.issues ?? []) as unknown as ValidationIssue[];
   const canReview = workflow.status === "REVIEW_REQUIRED";
+  const stored = workflow.validations[0];
+  // While a decision is pending the page shows validation computed NOW (not the result stored at processing
+  // time), so Approve never looks enabled when the server would refuse — e.g. after the delivery date has passed.
+  const fresh = canReview && extracted ? await currentValidation(defaultDeps(), user.id, id) : null;
+  const issues = (fresh?.issues ?? stored?.issues ?? []) as unknown as ValidationIssue[];
   const reviewEvent = [...workflow.auditEvents].reverse().find((e) => e.eventType === "REVIEW_REQUIRED");
   const reasons = ((reviewEvent?.metadata as { reasons?: string[] } | null)?.reasons ?? []).slice(0, 6);
-  const pending = ["RECEIVED", "PROCESSING", "EXTRACTED", "VALIDATING", "APPROVED", "EXECUTING"].includes(workflow.status);
+  const working = ["RECEIVED", "PROCESSING", "EXTRACTED", "VALIDATING", "APPROVED", "EXECUTING"].includes(workflow.status);
+  const job = workflow.jobs.find((j) => j.status === "QUEUED" || j.status === "RUNNING");
 
   return (
     <>
+      <AutoRefresh active={working} />
       <nav aria-label="Breadcrumb" className="mb-3 flex items-center gap-1 text-sm text-slate-600">
         <Link href="/dashboard" className="hover:underline">Dashboard</Link>
         <ChevronRight aria-hidden className="size-3.5" />
@@ -42,6 +50,7 @@ export default async function WorkflowPage({ params }: { params: Promise<{ id: s
           <h1 className="text-2xl font-semibold text-slate-900">{workflow.customerName ?? "Unknown customer"}</h1>
           <p className="mt-1 text-sm text-slate-600">
             {TYPE_LABEL[workflow.type]} · {SOURCE_LABEL[workflow.source]} · received {formatFullDateTime(workflow.createdAt)}
+            {canReview && workflow.reviewRequiredAt && <> · <span className="font-medium text-amber-800">waiting {ageLabel(workflow.reviewRequiredAt)}</span></>}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -52,7 +61,7 @@ export default async function WorkflowPage({ params }: { params: Promise<{ id: s
 
       {workflow.status === "FAILED" && (
         <div className="mb-6">
-          <Alert tone="error" title="This workflow failed">{workflow.failureReason ?? "An error occurred."} You can retry from the Automated action panel.</Alert>
+          <Alert tone="error" title="This workflow failed">{workflow.failureReason ?? "An error occurred."} You can retry from the panel on the right.</Alert>
         </div>
       )}
       {workflow.status === "REJECTED" && (
@@ -61,8 +70,16 @@ export default async function WorkflowPage({ params }: { params: Promise<{ id: s
       {workflow.status === "COMPLETED" && (
         <div className="mb-6"><Alert tone="success" title="Completed">Approved by a person and the automated action ran. See the timeline for the full history.</Alert></div>
       )}
-      {pending && (
-        <div className="mb-6"><Alert tone="info" title="Still working">This workflow is {workflow.status.toLowerCase()}. Reload in a moment.</Alert></div>
+      {working && (
+        <div className="mb-6">
+          <Alert tone="info" title="Working in the background">
+            This workflow is {workflow.status.toLowerCase().replace("_", " ")}
+            {job ? ` (attempt ${Math.max(job.attempts, 1)} of ${job.maxAttempts})` : ""}. This page refreshes automatically; you can safely leave it — the work continues on the server.
+          </Alert>
+        </div>
+      )}
+      {workflow.input?.purgedAt && (
+        <div className="mb-6"><Alert tone="info" title="Content purged">The document and extracted data were erased under the retention policy. Status history and the audit trail remain.</Alert></div>
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
@@ -71,6 +88,7 @@ export default async function WorkflowPage({ params }: { params: Promise<{ id: s
             canReview ? (
               <ReviewPanel
                 workflowId={workflow.id}
+                version={workflow.version}
                 canReview
                 fields={extracted.fields as unknown as ExtractedFields}
                 assessments={extracted.fieldStatus as unknown as ReviewAssessments}
@@ -88,10 +106,10 @@ export default async function WorkflowPage({ params }: { params: Promise<{ id: s
               </section>
             )
           ) : (
-            <section className="card card-body text-sm text-slate-600">No data was extracted{workflow.failureReason ? `: ${workflow.failureReason}` : "."}</section>
+            !working && <section className="card card-body text-sm text-slate-600">No data{workflow.input?.purgedAt ? " is retained" : " was extracted"}{workflow.failureReason ? `: ${workflow.failureReason}` : "."}</section>
           )}
           {extracted && <AiAnalysis data={extracted} />}
-          <ValidationCard result={validation} />
+          <ValidationCard result={stored} liveIssues={fresh ? (issues as ValidationIssue[]) : undefined} />
           <SourceCard input={workflow.input} />
         </div>
 

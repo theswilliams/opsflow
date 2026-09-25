@@ -69,19 +69,22 @@ export function AiAnalysis({ data }: { data: NonNullable<WorkflowDetail["extract
   );
 }
 
-export function ValidationCard({ result }: { result: WorkflowDetail["validations"][number] | undefined }) {
-  const issues = (result?.issues ?? []) as unknown as ValidationIssue[];
+export function ValidationCard({ result, liveIssues }: { result: WorkflowDetail["validations"][number] | undefined; liveIssues?: ValidationIssue[] }) {
+  // While a decision is pending, `liveIssues` (computed just now) supersedes the result stored at processing time.
+  const issues = liveIssues ?? ((result?.issues ?? []) as unknown as ValidationIssue[]);
+  const errorCount = liveIssues ? liveIssues.filter((i) => i.severity === "error").length : (result?.errorCount ?? 0);
+  const warningCount = liveIssues ? liveIssues.length - errorCount : (result?.warningCount ?? 0);
   return (
     <section aria-labelledby="val-h" className="card">
       <div className="card-header">
         <h2 id="val-h" className="card-title">Validation</h2>
-        {result && (
+        {(result || liveIssues) && (
           <span className="text-xs text-slate-600">
-            {result.errorCount} error{result.errorCount === 1 ? "" : "s"} · {result.warningCount} warning{result.warningCount === 1 ? "" : "s"}
+            {errorCount} error{errorCount === 1 ? "" : "s"} · {warningCount} warning{warningCount === 1 ? "" : "s"}{liveIssues ? " · checked just now" : ""}
           </span>
         )}
       </div>
-      {!result ? (
+      {!result && !liveIssues ? (
         <EmptyState title="Not validated yet">Validation runs after extraction.</EmptyState>
       ) : issues.length === 0 ? (
         <div className="flex items-center gap-2 px-4 py-4 text-sm text-emerald-800 sm:px-5">

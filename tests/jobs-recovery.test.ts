@@ -281,3 +281,24 @@ describe("F3 · EXECUTING", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("F3 · enqueue is race-free", () => {
+  it("20 concurrent enqueues (user retry + sweeper + webhook) leave exactly one job and raise no error", async () => {
+    const user = await makeUser("f3enq");
+    const id = await created(user.id);
+    const { enqueueJob } = await import("@/lib/jobs/queue");
+    const results = await Promise.allSettled(Array.from({ length: 20 }, () => enqueueJob(db, { userId: user.id, workflowId: id, type: "PROCESS_WORKFLOW", maxAttempts: 3 })));
+    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+    expect(await db.job.count({ where: { workflowId: id } })).toBe(1);
+  });
+
+  it("enqueue never disturbs a job that is running under a live lease", async () => {
+    const user = await makeUser("f3lease");
+    const id = await created(user.id);
+    const claimed = await claimJob(db, { workerId: "w-live", leaseMs: 60_000, now: NOW, workflowId: id });
+    const { enqueueJob } = await import("@/lib/jobs/queue");
+    await enqueueJob(db, { userId: user.id, workflowId: id, type: "PROCESS_WORKFLOW", maxAttempts: 3 });
+    const job = await jobOf(id);
+    expect(job).toMatchObject({ status: "RUNNING", leaseOwner: "w-live", attempts: claimed!.attempts });
+  });
+});

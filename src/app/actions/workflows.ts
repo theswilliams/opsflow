@@ -86,7 +86,6 @@ export async function editFieldsAction(workflowId: string, _prev: ActionState, f
     return { ok: `Saved ${changes.length} change${changes.length === 1 ? "" : "s"}.` };
   } catch (e) {
     if (e instanceof WorkflowError && e.code === "NO_CHANGES") return { ok: "No changes to save." };
-    if (e instanceof WorkflowError && e.code === "STALE_VERSION") revalidatePath(`/workflows/${workflowId}`);
     return toState(e);
   }
 }
@@ -98,7 +97,6 @@ export async function approveAction(workflowId: string, _prev: ActionState, form
   try {
     await approveWorkflow(defaultDeps(), { workflowId, userId: user.id, actor: { type: "USER", id: user.id }, expectedVersion: version, comment: String(formData.get("comment") ?? "") });
   } catch (e) {
-    if (e instanceof WorkflowError && e.code === "STALE_VERSION") revalidatePath(`/workflows/${workflowId}`);
     return toState(e);
   }
   revalidatePath(`/workflows/${workflowId}`);

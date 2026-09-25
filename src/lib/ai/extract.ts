@@ -34,10 +34,10 @@ export interface ExtractionOptions {
   maxAttempts?: number;
   timeoutMs?: number;
   retryDelayMs?: number;
-  /** Called before every provider request; throw ExtractionError to stop (e.g. budget exhausted). */
-  beforeAttempt?: () => Promise<void> | void;
+  /** Called before every provider request; throw ExtractionError to stop (e.g. budget exhausted). Its result is passed to onAttempt. */
+  beforeAttempt?: () => Promise<unknown> | unknown;
   /** Called after every provider request — successful or not — so spend is always recorded. */
-  onAttempt?: (usage: AttemptUsage) => Promise<void> | void;
+  onAttempt?: (usage: AttemptUsage, ticket: unknown) => Promise<void> | void;
 }
 
 /** The stored form of an assessment: the model's claim plus what OpsFlow independently verified. */
@@ -171,13 +171,13 @@ export async function extractWorkflowData(
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    await options.beforeAttempt?.();
+    const ticket = await options.beforeAttempt?.();
     try {
       const response = await provider.extract(
         { text, referenceDate: input.referenceDate, feedback },
         { signal: AbortSignal.timeout(timeoutMs) },
       );
-      await options.onAttempt?.({ ok: true, model: response.model, inputTokens: response.usage?.inputTokens, outputTokens: response.usage?.outputTokens });
+      await options.onAttempt?.({ ok: true, model: response.model, inputTokens: response.usage?.inputTokens, outputTokens: response.usage?.outputTokens }, ticket);
       const parsed = extractionSchema.safeParse(response.output);
       if (!parsed.success) {
         feedback = issueSummary(parsed.error);
@@ -190,7 +190,7 @@ export async function extractWorkflowData(
     } catch (err) {
       if (err instanceof ExtractionError) throw err;
       lastError = err;
-      await options.onAttempt?.({ ok: false, model: provider.name });
+      await options.onAttempt?.({ ok: false, model: provider.name }, ticket);
       if (err instanceof ProviderError) {
         logger.warn("ai.extraction.provider_error", { provider: provider.name, attempt, category: err.category });
         if (!err.retryable) break;

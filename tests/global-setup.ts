@@ -48,6 +48,7 @@ export default async function setup() {
   process.env.DATABASE_URL = url;
   process.env.APP_ENCRYPTION_KEY = randomBytes(32).toString("base64");
   process.env.AI_PROVIDER = "mock";
+  process.env.OPSFLOW_PEER_SECRET = "test-peer-secret";
   process.env.APP_URL = "http://localhost:3000";
 
   return async () => {

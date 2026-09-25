@@ -1,13 +1,14 @@
 "use client";
 
 import clsx from "clsx";
-import { FilePlus2, LayoutDashboard, Settings } from "lucide-react";
+import { Cpu, FilePlus2, LayoutDashboard, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const LINKS = [
   { href: "/dashboard", label: "Dashboard", Icon: LayoutDashboard },
   { href: "/workflows/new", label: "New workflow", Icon: FilePlus2 },
+  { href: "/usage", label: "AI usage", Icon: Cpu },
   { href: "/settings", label: "Integrations", Icon: Settings },
 ];
 
