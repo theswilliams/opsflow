@@ -118,6 +118,8 @@ model Workflow {
   overallConfidence ConfidenceLevel @default(UNKNOWN)
   /// True when validation or AI analysis found something a human must look at.
   needsAttention  Boolean         @default(false)
+  /// Most important reason a person must look at this (shown on the dashboard).
+  attentionReason String?
   failureReason   String?
   idempotencyKey  String?
   createdAt       DateTime        @default(now())

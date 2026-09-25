@@ -198,7 +198,7 @@ export function ActionsCard({ workflow }: { workflow: WorkflowDetail }) {
       )}
       {workflow.status === "FAILED" && (
         <div className="border-t border-line px-4 py-3 sm:px-5">
-          {workflow.failureReason && <p className="mb-2 text-sm text-red-800">{workflow.failureReason}</p>}
+          {workflow.failureReason && !workflow.actions.some((x) => x.error) && <p className="mb-2 text-sm text-red-800">{workflow.failureReason}</p>}
           <RetryButton workflowId={workflow.id} label={workflow.reviews.some((r) => r.decision === "APPROVED") ? "Retry action" : "Retry processing"} />
         </div>
       )}

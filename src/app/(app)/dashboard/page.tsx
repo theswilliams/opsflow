@@ -78,7 +78,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Se
                     <div className="min-w-0">
                       <p className="truncate font-medium text-slate-900">{w.customerName ?? "Unknown customer"}</p>
                       <p className="mt-0.5 truncate text-xs text-slate-600">
-                        {w.status === "FAILED" ? w.failureReason ?? "Failed" : "Needs a person to review before anything happens"}
+                        {w.status === "FAILED" ? (w.failureReason ?? "Failed") : (w.attentionReason ?? "Needs a person to review before anything happens")}
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">

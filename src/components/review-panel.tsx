@@ -80,6 +80,7 @@ export function ExtractedFieldsList({ fields, assessments, issues }: Pick<Props,
     <dl className="divide-y divide-line">
       {rows.map((r) => {
         const rowIssues = issues.filter((i) => r.issueFields.includes(i.field));
+        const optionalMissing = r.key === "special_instructions" && r.assess.status === "missing";
         return (
           <div key={r.key} className="grid gap-x-4 gap-y-1 px-4 py-3 sm:grid-cols-[10rem_1fr_auto] sm:px-5">
             <dt className="text-[13px] font-medium text-slate-600">{r.label}</dt>
@@ -97,8 +98,8 @@ export function ExtractedFieldsList({ fields, assessments, issues }: Pick<Props,
               ))}
             </dd>
             <dd className="flex items-start gap-2 sm:justify-end">
-              <span className={clsx("pt-0.5 text-xs", STATUS_CLS[r.assess.status])}>{r.assess.edited ? "Edited by reviewer" : STATUS_LABEL[r.assess.status]}</span>
-              <ConfidenceBadge level={r.assess.confidence} />
+              <span className={clsx("pt-0.5 text-xs", optionalMissing ? "text-slate-500" : STATUS_CLS[r.assess.status])}>{r.assess.edited ? "Edited by reviewer" : STATUS_LABEL[r.assess.status]}</span>
+              {!optionalMissing && <ConfidenceBadge level={r.assess.confidence} />}
             </dd>
           </div>
         );

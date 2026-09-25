@@ -213,7 +213,13 @@ async function validateAndRoute(deps: WorkflowDeps, userId: string, workflowId: 
       userId,
       from: "VALIDATING",
       to: "REVIEW_REQUIRED",
-      data: { customerName: fields.customer, overallConfidence: decision.overallConfidence, needsAttention: decision.needsAttention, failureReason: null },
+      data: {
+        customerName: fields.customer,
+        overallConfidence: decision.overallConfidence,
+        needsAttention: decision.needsAttention,
+        attentionReason: decision.needsAttention ? (decision.reasons[0] ?? null) : null,
+        failureReason: null,
+      },
     });
     await recordAudit(tx, {
       userId,
@@ -384,7 +390,7 @@ export async function rejectWorkflow(deps: WorkflowDeps, args: { workflowId: str
   if (workflow.status !== "REVIEW_REQUIRED") throw new WorkflowError("INVALID_STATE", "Only workflows awaiting review can be rejected.");
   const comment = args.comment?.trim().slice(0, 1000) || null;
   await deps.db.$transaction(async (tx) => {
-    await transition(tx, { workflowId, userId, from: "REVIEW_REQUIRED", to: "REJECTED", data: { needsAttention: false } });
+    await transition(tx, { workflowId, userId, from: "REVIEW_REQUIRED", to: "REJECTED", data: { needsAttention: false, attentionReason: null } });
     await tx.review.create({
       data: { workflowId, userId, reviewerId: "id" in actor ? actor.id : userId, decision: "REJECTED", comment, changes: json([]) },
     });
@@ -421,7 +427,7 @@ export async function approveWorkflow(deps: WorkflowDeps, args: { workflowId: st
 
   try {
     await deps.db.$transaction(async (tx) => {
-      await transition(tx, { workflowId, userId, from: "REVIEW_REQUIRED", to: "APPROVED", data: { needsAttention: false } });
+      await transition(tx, { workflowId, userId, from: "REVIEW_REQUIRED", to: "APPROVED", data: { needsAttention: false, attentionReason: null } });
       await tx.review.create({
         data: {
           workflowId,

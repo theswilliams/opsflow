@@ -41,7 +41,9 @@ export function decideReview(input: {
   if (input.requiresHumanReview && input.aiReason) reasons.push(input.aiReason);
   if (input.validation.errorCount) reasons.push(`${input.validation.errorCount} validation error(s) must be fixed before approval.`);
   const warnings = input.validation.issues.filter((i) => i.severity === "warning");
-  for (const w of warnings.slice(0, 3)) reasons.push(w.message);
+  // An ambiguity note already explains its field; do not repeat it as a warning.
+  const explained = new Set<string>(input.ambiguities.map((x) => x.field));
+  for (const w of warnings.filter((x) => !explained.has(x.field)).slice(0, 3)) reasons.push(w.message);
   for (const a of input.ambiguities) if (!reasons.includes(a.note)) reasons.push(a.note);
   const weak = REQUIRED_FIELDS.filter((n) => RANK[input.assessments[n].confidence] < RANK.medium);
   if (weak.length) reasons.push(`Low AI confidence: ${weak.join(", ")}.`);

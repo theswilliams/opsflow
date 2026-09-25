@@ -102,6 +102,8 @@ describe("business rules", () => {
     const d = decideReview({ requiresHumanReview: e.requires_human_review, aiReason: e.reason, assessments: e.field_assessments, ambiguities: e.ambiguities, validation });
     expect(d.needsAttention).toBe(true);
     expect(d.reasons.length).toBeGreaterThan(0);
+    // The time ambiguity is explained once, not again as a warning.
+    expect(d.reasons.filter((r) => /morning/i.test(r))).toHaveLength(1);
   });
 
   it("overall confidence is the weakest required field", () => {
