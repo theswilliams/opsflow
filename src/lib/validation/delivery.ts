@@ -42,10 +42,6 @@ const minutes = (hhmm: string) => {
 };
 const STREET_SUFFIX = /\b(street|st|avenue|ave|road|rd|drive|dr|boulevard|blvd|lane|ln|court|ct|way|crescent|cres|place|pl|highway|hwy|parkway|pkwy|terrace|trail)\b\.?/i;
 
-export function normalizeAddress(address: string): string {
-  return address.toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
-}
-
 export function validateDelivery(fields: ExtractedFields, ctx: ValidationContext): ValidationOutcome {
   const issues: ValidationIssue[] = [];
   const add = (severity: Severity, field: string, code: string, message: string) => issues.push({ severity, field, code, message });

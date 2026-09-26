@@ -104,7 +104,7 @@ export async function seedDemo(db: Db, options: { password: string; now?: Date; 
 
   let credential: SeedResult["credential"];
   if (options.withCredential) {
-    await db.apiCredential.updateMany({ where: { userId: user.id, label: "Demo n8n", revokedAt: null }, data: { revokedAt: new Date() } });
+    await db.apiCredential.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
     credential = await createCredential(db, user.id, "Demo n8n");
   }
   return { userId: user.id, email: DEMO_EMAIL, credential, workflowIds: ids };

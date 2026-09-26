@@ -17,6 +17,8 @@ export const appLimiters = {
   /** Protects AI spend: workflow creation per signed-in user. */
   createByUser: new RateLimiter(20, 60_000),
   credentialCreateByUser: new RateLimiter(5, 60 * 60_000),
+  /** The export walks every row a user owns; a signed-in client should not be able to repeat it in a loop. */
+  exportByUser: new RateLimiter(5, 60_000),
 };
 
 export function resetAppLimiters() {

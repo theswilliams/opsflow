@@ -7,7 +7,8 @@ import next from "next";
 
 const dev = process.argv.includes("--dev");
 const port = Number(process.env.PORT || 3000);
-const hostname = process.env.HOSTNAME_BIND || (dev ? "localhost" : "0.0.0.0");
+// Loopback by default so a local demo is not exposed to the network; set HOSTNAME_BIND=0.0.0.0 in a container or behind a proxy.
+const hostname = process.env.HOSTNAME_BIND || "localhost";
 
 // A per-process secret: lets the application distinguish headers stamped HERE from headers a client made up.
 const peerSecret = randomBytes(32).toString("hex");

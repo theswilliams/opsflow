@@ -4,12 +4,25 @@
 
 OpsFlow is a workflow-automation platform for small and mid-sized businesses. It takes an unstructured request (an email, a pasted note, a PDF, or a webhook call), extracts structured data with an LLM, validates it deterministically, holds it for human review when anything is uncertain, and only after a person approves *the version they saw* runs an automated action — with a complete audit trail.
 
-It is a portfolio project. It is built like a real system, it has been through an independent adversarial security audit and remediation (see [Security](#security-summary)), and this README is explicit about where it stops being a real system (see [Limitations](#limitations)).
+It is a portfolio project. It is engineered like a real system — durable background jobs, database-enforced invariants, a large test suite that runs against real PostgreSQL — and it was hardened after a written adversarial security audit (see [Security](#security-summary)). It is **not** production-ready, and [Status and limitations](#status-and-limitations) says exactly where it stops being a real system.
+
+![OpsFlow review screen: extracted fields with verified evidence, validation warnings and an approval boundary](docs/screenshots/04-review.png)
 
 ```text
 Unstructured input → durable job → AI extraction → evidence verification → deterministic validation
         → human review (edit / approve a specific version / reject) → outbox action (idempotent) → audit trail
 ```
+
+## Screenshots
+
+All images are captured from the local demo with synthetic data (`scripts/screenshots.mjs`).
+
+| | |
+| --- | --- |
+| ![Dashboard with KPIs, attention list with ageing, and simulated review notifications](docs/screenshots/02-dashboard.png) | ![A completed request: the human-edited fields, the simulated confirmation, and the audit timeline](docs/screenshots/05-completed.png) |
+| **Dashboard** — what needs a person, and for how long it has waited | **Completed request** — what changed from the AI output, the simulated action, and the timeline |
+| ![AI usage page: requests, tokens and cost only when known](docs/screenshots/06-ai-usage.png) | ![Dashboard on a phone-width screen](docs/screenshots/08-dashboard-mobile.png) |
+| **AI usage** — spend is shown only when it can be known | **Responsive** down to phone width |
 
 ## The problem it solves
 
@@ -25,12 +38,12 @@ OpsFlow's design principle is that **the AI proposes, deterministic code checks,
 - **Known / inferred / ambiguous / missing** per field, with qualitative confidence (High / Medium / Low / Unknown — *not* fake percentages).
 - **Deterministic validation** — required fields, calendar dates, quantities, address structure, time ranges, phone format, indexed duplicate detection with normalised customer names.
 - **Human-in-the-loop review** — correct any field, approve or reject. **Approval is bound to a version**: if someone else changed the request after you opened it, your approval is refused and you are asked to reload.
-- **Outbox action, at-most-once side effects** — the customer confirmation is an outbox row with a deterministic idempotency key passed to the provider; retries after a lost commit cannot send twice. Actions are *simulated* in this repo.
+- **Outbox action with an idempotency key** — the customer confirmation is an outbox row with a deterministic idempotency key passed to the provider, so a retry after a lost commit does not send twice *provided the provider honours the key* (real email/SMS APIs do). The action is *simulated* in this repo; the contract is tested against a stand-in provider.
 - **AI spend controls** — every request recorded (provider, model, tokens, estimated cost *only when knowable*), per-user daily/monthly budgets enforced atomically, an AI-usage page.
 - **Audit log** — receipt, extraction, validation, edits, decisions, actions, rejected webhook calls. Guarded against UPDATE/DELETE/TRUNCATE by the database (with the honest limits in [SECURITY.md](docs/SECURITY.md#audit-log-what-is-and-is-not-promised)).
 - **Dashboard** — KPIs, attention list with **ageing / overdue** indicators, review notifications (simulated), activity feed, filterable table. Responsive down to phone width.
 - **Secure webhook + n8n** — HMAC-signed requests with the idempotency key inside the signature, durable replay ledger, per-tenant rate limits, importable n8n workflow.
-- **Multi-tenant isolation** — every query is user-scoped, and the database enforces owner consistency with composite foreign keys.
+- **Per-user data isolation** — every query is scoped to the signed-in user, and the database enforces owner consistency with composite foreign keys. (Each account is a single-user tenant; there are no teams or roles.)
 - **Privacy controls** — data export, account deletion (anonymising tombstone), configurable retention purge — see [docs/DATA.md](docs/DATA.md).
 
 ## Architecture
@@ -50,7 +63,7 @@ flowchart LR
   P --> MK[MockAIProvider]
   X --> E[Evidence verification<br/>field-scoped, source spans]
   E --> V[Validation + business rules]
-  V --> H[Human review<br/>edit · approve(version) · reject]
+  V --> H["Human review<br/>edit · approve a version · reject"]
   H --> O[Outbox action job<br/>idempotency key]
   O --> AP{{ActionProvider}}
   W <--> DB[(PostgreSQL<br/>Prisma)]
@@ -84,14 +97,14 @@ Next.js 16 (App Router, Server Actions) · React 19 · TypeScript (strict) · Ta
 - **AI**: instructions/data separation, strict output schema, deterministic field-scoped evidence verification, pipeline-owned review decision, atomic per-user budgets.
 - **Other**: nonce-based CSP (no `'unsafe-inline'` scripts), security headers, no `dangerouslySetInnerHTML`, Prisma parameterisation, PDF parsing isolated in a worker thread with timeout, redacting logger, no stack traces or provider errors to users.
 
-The independent audit found 2 critical, 2 high, 7 medium and 7 low issues. All were reproduced, fixed, and covered by regression tests; a second adversarial pass found and fixed further issues in the fixes themselves. Findings, fixes and residual risks: [docs/SECURITY.md](docs/SECURITY.md).
+A written adversarial audit of the first version reported 11 findings (2 critical, 2 high, 7 medium) plus 7 low-severity items. Seven of the eleven were **reproduced** against the original code with failing tests or scripts; the other four were **confirmed by code inspection**. All eleven were then fixed, each with regression tests, and the original exploits were re-run against the fixed build where practical. A follow-up review of the fixes (by the same author, so a self-review, not an independent one) found and fixed further problems. Findings, fixes and residual risks: [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Local setup
 
-Requirements: Node.js 20+ (developed and tested on 24), npm. No Docker or Postgres install needed.
+Requirements: **Node.js 22.12 or newer** (developed and tested on 24; the test runner requires 22.12+) and npm. No Docker or PostgreSQL install is needed — `npm run db:start` runs a real PostgreSQL from an npm package.
 
 ```bash
-git clone <this repo> opsflow && cd opsflow
+git clone <repository-url> opsflow && cd opsflow
 npm install
 npm run setup        # creates .env with random secrets; prints the demo login
 npm run db:start     # terminal 1: starts a local PostgreSQL (keep it running)
@@ -105,9 +118,9 @@ npm run db:seed      # demo data + a demo webhook credential (printed once)
 npm run dev          # http://localhost:3000  (custom server + in-process job worker)
 ```
 
-Production-style run: `npm run build && npm start`. To keep AI/PDF work off the web process, set `OPSFLOW_WORKER=off` there and run `npm run worker` separately (same `.env`).
+Production-style run: `npm run build && npm start` (listens on `localhost:3000` only; set `HOSTNAME_BIND=0.0.0.0` inside a container or behind a reverse proxy, and `PORT` to change the port). To keep AI/PDF work off the web process, set `OPSFLOW_WORKER=off` there and run `npm run worker` separately (same `.env`).
 
-Sign in as `demo@opsflow.test` with the password printed by `npm run setup` (it is `DEMO_USER_PASSWORD` in `.env`). Prefer Docker? `POSTGRES_PASSWORD=… docker compose up -d` and set `DATABASE_URL` accordingly.
+Sign in as `demo@opsflow.test` with the password printed by `npm run setup` (it is `DEMO_USER_PASSWORD` in `.env`). The demo account and its password exist only in your local database; there is no shared or hosted demo, and nothing in the repository is a real credential. Prefer Docker? `POSTGRES_PASSWORD=… docker compose up -d` and set `DATABASE_URL` accordingly.
 
 ### Environment variables
 
@@ -124,15 +137,21 @@ The full, commented list is in [`.env.example`](.env.example). The important one
 | `MAX_CREDENTIALS_PER_USER`, `WEBHOOK_KEY_LIMIT_PER_MIN`, `WEBHOOK_TENANT_LIMIT_PER_MIN` | no | Abuse controls. |
 | `TRUSTED_PROXIES`, `TRUST_PROXY_HOPS` | no | Client-address trust model — read [SECURITY.md](docs/SECURITY.md#client-address-trust-model) before setting. |
 | `RETENTION_DAYS` | no | Purge documents/extracted data this long after a workflow finishes (default 90; 0 disables). |
-| `DEMO_USER_PASSWORD` | for seeding | Password of the seeded demo user. |
+| `DEMO_USER_PASSWORD` | for seeding | Password of the seeded demo user (demo only). |
+| `CSP_MODE` | no | `enforce` (default), `report-only` or `off`. |
+| `OPSFLOW_WORKER` | no | `off` on the web process when `npm run worker` runs separately. |
+| `JOB_LEASE_SECONDS`, `JOB_MAX_ATTEMPTS`, `PDF_TIMEOUT_MS` | no | Background-job and PDF-parsing limits. |
+| `PORT`, `HOSTNAME_BIND` | no | Read by `server.mjs` from the shell environment (not from `.env`). |
+
+Only `DATABASE_URL` and `APP_ENCRYPTION_KEY` are required to run; `npm run setup` generates both. Variables used only by tooling: `TEST_DATABASE_URL` (tests against an existing server), `SHADOW_DATABASE_URL` (the CI migration drift check), `CHROME_PATH` (browser scripts).
 
 ## Demo mode
 
 With `AI_PROVIDER=mock` (the default) OpsFlow runs with no external services. A banner on every page says so, and each workflow's AI card is labelled "Mock provider (demo)". The mock is a deterministic rule-based parser — it is *not* a language model and is not presented as one; it reports no token usage, so its cost is shown as unknown rather than zero. Actions are always simulated: the confirmation is generated and recorded, never sent.
 
-To use a real model: `AI_PROVIDER=claude` and set `ANTHROPIC_API_KEY`. (This path is covered by tests against a faked SDK client; see [Limitations](#limitations).)
+To use a real model: `AI_PROVIDER=claude` and set `ANTHROPIC_API_KEY`. (This path is covered by tests against a faked SDK client; see [Status and limitations](#status-and-limitations).)
 
-Walkthrough: [docs/DEMO.md](docs/DEMO.md).
+Walkthrough: [docs/DEMO.md](docs/DEMO.md). To regenerate the screenshots in [`docs/screenshots/`](docs/screenshots) from the synthetic demo data: `DEMO_USER_PASSWORD=… node scripts/screenshots.mjs http://localhost:3000`.
 
 ## n8n integration
 
@@ -140,7 +159,9 @@ Walkthrough: [docs/DEMO.md](docs/DEMO.md).
 
 ```bash
 OPSFLOW_KEY_ID=ofk_… OPSFLOW_SECRET=ofs_… node scripts/send-webhook.mjs http://localhost:3000
-OPSFLOW_KEY_ID=ofk_… OPSFLOW_SECRET=ofs_… node scripts/verify-audit-fixes.mjs http://localhost:3000   # re-run the audit's exploits
+OPSFLOW_KEY_ID=ofk_… OPSFLOW_SECRET=ofs_… node scripts/verify-audit-fixes.mjs http://localhost:3000   # re-run the audit's replay exploit (F1)
+# The client-isolation exploit (F2) needs distinct client addresses: restart the server with TRUSTED_PROXIES=127.0.0.1,::1
+# in its environment and add --proxied to the command above. Without --proxied the F2 checks are skipped, not failed.
 ```
 
 ## Testing
@@ -154,6 +175,8 @@ npm run build
 npm run check               # lint + typecheck + tests + build
 DEMO_USER_PASSWORD=… node scripts/e2e-smoke.mjs http://localhost:3000   # real-browser smoke test (needs Chrome/Edge + a running seeded server)
 ```
+
+**Current results:** **347 tests in 24 files pass** (Vitest against real PostgreSQL, run on every push in CI), plus lint, typecheck, production build, the migration-drift check and `npm audit` (0 known vulnerabilities). Code-coverage percentage is not measured.
 
 Integration tests run against real PostgreSQL (started via `embedded-postgres`, or set `TEST_DATABASE_URL` to use an existing server — CI does this with a service container). Suites cover: AI parsing, evidence verification (adversarial fixtures), validation, normalisation and large-dataset duplicate detection, the state machine, the approval boundary and versioning, edits, action outbox/idempotency, job recovery/leases/fencing/concurrency, PDF isolation, AI budgets, webhook auth/replay/idempotency/rate-limits/limits, client-address trust, sessions, uploads, privacy (export/deletion/retention), DB integrity and audit-log guards, the n8n signing code, the seed, and security regressions. CI additionally replays all migrations into a scratch database and diffs them against `schema.prisma`.
 
@@ -169,21 +192,27 @@ The important ones (full list in [docs/DECISIONS.md](docs/DECISIONS.md)):
 - **Qualitative confidence**, because the model's self-reported numbers are not calibrated.
 - **Mock provider behind an interface** rather than canned responses in the UI.
 
-## Limitations
+## Status and limitations
 
-Be honest about what this is:
+Be honest about what this is: a well-tested reference implementation, **not production-ready**.
 
-- **Not production-ready.** It is a well-tested, audited reference implementation.
-- **The Claude provider has not been exercised against the live API** in this repository (no API key was available). It is unit-tested against a faked SDK client. The evidence rules are strict; expect to tune the prompt against real traffic.
-- **The n8n workflow JSON was not imported into a running n8n.** It is validated structurally and its signing code is executed in tests against the real handler.
-- **Rate limits are in-memory (per process).** Multi-instance deployments need a shared store for them (database-backed ceilings — AI budgets, credential counts, replay/idempotency — are exact across instances).
-- **Actions are simulated only.** No real email/SMS provider; the idempotency contract is implemented and tested against a stand-in for one.
-- **No password reset, email verification or MFA** (each needs a trustworthy email channel; a simulated one would be a backdoor). Registration is open and reveals whether an email exists.
-- **No OCR.** Scanned images are refused with an explanation.
-- **One workflow type** and **single-user tenants** (no teams/roles/shared review queue, though the queue has ageing and notifications are modelled).
+| | What |
+| --- | --- |
+| **Verified** (by tests, or by actually running it) | Everything in [Features](#features) that runs locally, on real PostgreSQL: the workflow state machine, version-bound approval (also driven in a real browser with two tabs), job recovery after a killed process, webhook signing/replay/rate-limit behaviour over HTTP, PDF isolation, AI budgets, evidence verification, duplicate detection, authorisation between users, the strict CSP (real browser, no violations), export/deletion/retention, and that migrations match `schema.prisma`. |
+| **Implemented but simulated** | The customer confirmation action (generated and recorded, never sent), review notifications, and the demo AI provider (a deterministic rule-based parser, not a language model). |
+| **Implemented but not tested live** | The Claude provider (tested against a faked SDK client only — no API key was used) and the importable n8n workflow (validated structurally; its signing code is exercised against the real handler, but it was never imported into a running n8n). |
+| **Not built — needed for real use** | Distributed rate limiting (limits are in-memory, per process); password reset, email verification and MFA (they need a real email channel; a simulated one would be a backdoor); a real email/SMS provider; OCR (scanned images are refused); teams, roles and a shared review queue; workflow types beyond delivery requests. |
+
+Other things to know:
+
 - **The audit log is guarded, not owner-proof or tamper-evident** — the database owner can drop the triggers.
-- **AI token/cost ceilings can overshoot by the requests in flight**; request-count ceilings cannot.
+- **AI token/cost ceilings can overshoot** by the requests in flight; request-count ceilings cannot.
+- **No housekeeping for bookkeeping tables:** finished job rows, webhook receipts, AI-usage rows and audit events are kept indefinitely (only documents and extracted data are purged), so they grow with use.
+- **Registration is open** and reveals whether an email address is registered; distributed password guessing is slowed only by bcrypt.
+- **Duplicate detection is exact on normalised keys**, so look-alike names (for example homoglyphs) are not matched.
 - **Personal data in documents is sent to the AI provider** when `AI_PROVIDER=claude` — an operator decision with privacy implications ([docs/DATA.md](docs/DATA.md)).
+- **Dependencies:** `npm audit` reports no known vulnerabilities. Newer major versions of ESLint, TypeScript and Prisma exist and were deliberately not adopted in this pass.
+- **Not measured:** code coverage percentage.
 
 ## Project layout
 
@@ -201,11 +230,11 @@ src/lib/privacy/   export, deletion, retention
 src/proxy.ts       per-request nonce CSP
 server.mjs         custom server: real peer address (MAC-protected) for rate limiting
 tests/             Vitest suites (real PostgreSQL)
-docs/              architecture, security, data handling, AI pipeline, n8n, demo, decisions
+docs/              architecture, security, data handling, AI pipeline, n8n, demo, decisions, screenshots/
 n8n/               importable workflow
-scripts/           env setup, dev database, worker, webhook sender, exploit re-runner, e2e smoke test, migration guard
+scripts/           env setup, dev database, worker, webhook sender, exploit re-runner, e2e smoke test, screenshots, migration guard
 ```
 
 ## License
 
-Portfolio project — all rights reserved unless a license is added.
+No license has been chosen yet, so by default all rights are reserved: the code is visible for review but is not licensed for reuse.

@@ -10,7 +10,7 @@ npm run db:start                 # terminal 1
 npm run db:deploy && npm run db:seed && npm run dev     # terminal 2
 ```
 
-Open <http://localhost:3000> and sign in as `demo@opsflow.test`. The amber banner confirms **demo mode**: a deterministic mock extractor, simulated actions. `npm run dev` also starts the in-process job worker, so submitted requests are processed in the background (and the page refreshes itself while it waits).
+Open <http://localhost:3000> and sign in as `demo@opsflow.test` with the password `npm run setup` printed (`DEMO_USER_PASSWORD` in `.env`; it exists only on your machine). The amber banner confirms **demo mode**: a deterministic mock extractor, simulated actions. `npm run dev` also starts the in-process job worker, so submitted requests are processed in the background (and the page refreshes itself while it waits).
 
 ## The story in five steps
 
@@ -20,6 +20,7 @@ Open <http://localhost:3000> and sign in as `demo@opsflow.test`. The amber banne
    - the date was *inferred* from "this Friday", with the quote it came from (**OpsFlow verified that quote against the document** — the model cannot vouch for itself);
    - the time is **Ambiguous / Medium**: "morning" is not a delivery time — and the AI did not invent one;
    - the contact is **Low**: a name but no phone number;
+   - a third warning, **possible duplicate**: the demo seed already contains this exact request (as the *ABC Building Supplies* item awaiting review), so submitting it again is caught by duplicate detection — same normalised customer, address and date;
    - validation shown was computed *just now*, and the header says how long the request has been waiting.
 4. **Edit request** — set start 09:00, end 11:00, add a phone number, **Save**. The timeline shows the edit with before → after values; the version increments; validation re-ran and the warning cleared.
 5. **Approve** — the workflow completes. The *Automated action* card shows the generated confirmation (`Time: 9:00 AM – 11:00 AM`) marked **SIMULATED — no message was sent**. *Review* shows what changed from the AI output; the *Timeline* is the audit trail.
@@ -43,11 +44,15 @@ Open the same *Review required* workflow in **two browser tabs**. In tab B, edit
 | Upload | New workflow → *Upload document* with a `.txt` or text-based PDF | Content sniffing; PDF parsed in an isolated worker thread |
 | Tenant isolation | Register a second account in a private window and try a workflow URL from the first | 404 — not "forbidden", not visible |
 | Webhook | *Integrations* → create credential → `node scripts/send-webhook.mjs` (see [N8N.md](N8N.md)) | Signed request → workflow appears as *Webhook*; sending the same text twice within 5 minutes returns the original (`duplicate: true`) |
-| Replay attack | `node scripts/verify-audit-fixes.mjs` | The audit's exploits (rotated idempotency keys, lock-out of a victim's public key id) fail |
+| Replay attack | `node scripts/verify-audit-fixes.mjs` (add `--proxied` with `TRUSTED_PROXIES=127.0.0.1,::1` on the server for the lock-out check) | The audit's exploits (rotated idempotency keys, lock-out of a victim's public key id) fail |
+
+## Screenshots
+
+The images in [`screenshots/`](screenshots) were captured from this walkthrough with the synthetic demo data (`node scripts/screenshots.mjs`, which also fails on any console error or failed request).
 
 ## Using a real model
 
-Set `AI_PROVIDER=claude` and `ANTHROPIC_API_KEY` in `.env` and restart. The banner disappears and AI cards show `Claude · <model>`; token usage and (with `AI_PRICE_*` set) estimated cost appear on **AI usage**. Everything else is identical, which is the point of the provider interface. (See the README limitations: this path is tested against a fake client, not the live API.)
+Set `AI_PROVIDER=claude` and `ANTHROPIC_API_KEY` in `.env` and restart. The banner disappears and AI cards show `Claude · <model>`; token usage and (with `AI_PRICE_*` set) estimated cost appear on **AI usage**. Everything else is identical, which is the point of the provider interface. (See README › Status and limitations: this path is tested against a fake client, not the live API.)
 
 ## Reset
 

@@ -3,6 +3,9 @@ import { getDb } from "../src/lib/db";
 import { seedDemo } from "../src/lib/demo/seed";
 
 async function main() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Refusing to seed demo data with NODE_ENV=production: the seed deletes and recreates the demo user's workflows.");
+  }
   const password = process.env.DEMO_USER_PASSWORD;
   if (!password) {
     throw new Error("DEMO_USER_PASSWORD is not set. Run `npm run setup` (generates .env) or set it yourself.");

@@ -12,10 +12,17 @@ import { listCredentials } from "@/lib/webhook/credentials";
 
 export const metadata: Metadata = { title: "Integrations" };
 
+/** Revoked credentials stay in the database for the audit trail; the page only lists the most recent few. */
+const MAX_REVOKED_SHOWN = 3;
+
 export default async function SettingsPage() {
   const user = await requireUser();
   const env = getEnv();
-  const credentials = await listCredentials(getDb(), user.id);
+  const allCredentials = await listCredentials(getDb(), user.id);
+  const active = allCredentials.filter((c) => !c.revokedAt);
+  const revoked = allCredentials.filter((c) => c.revokedAt);
+  const credentials = [...active, ...revoked.slice(0, MAX_REVOKED_SHOWN)];
+  const hiddenRevoked = revoked.length - Math.min(revoked.length, MAX_REVOKED_SHOWN);
   const demo = isDemoMode();
 
   return (
@@ -48,15 +55,20 @@ export default async function SettingsPage() {
                 ))}
               </ul>
             )}
+            {hiddenRevoked > 0 && (
+              <p className="border-t border-line px-4 py-2 text-xs text-slate-500 sm:px-5">
+                {hiddenRevoked} older revoked credential{hiddenRevoked === 1 ? "" : "s"} not shown.
+              </p>
+            )}
           </section>
 
           <section aria-labelledby="ex-h" className="card">
             <div className="card-header"><h2 id="ex-h" className="card-title">Example request</h2></div>
             <div className="card-body space-y-3 text-sm text-slate-700">
-              <p>Sign <code className="font-mono text-xs">{"<timestamp>.<raw body>"}</code> with HMAC-SHA256 using your secret.</p>
+              <p>Sign <code className="font-mono text-xs">{"v1 ⏎ <timestamp> ⏎ <idempotency-key> ⏎ <raw body>"}</code> with HMAC-SHA256 using your secret. The idempotency key is optional and empty here; if you send an <code className="font-mono text-xs">Idempotency-Key</code> header it must be part of what you sign.</p>
               <pre className="overflow-x-auto rounded-md bg-slate-900 p-3 font-mono text-xs leading-relaxed text-slate-100">{`BODY='{"type":"delivery_request","text":"Customer: ABC\\n4 pallets of shingles to 125 King Street, London, Ontario this Friday","external_id":"order-1042"}'
 TS=$(date +%s)
-SIG=$(printf '%s' "$TS.$BODY" | openssl dgst -sha256 -hmac "$OPSFLOW_SECRET" | sed 's/^.* //')
+SIG=$(printf 'v1\\n%s\\n\\n%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$OPSFLOW_SECRET" | sed 's/^.* //')
 
 curl -X POST ${env.APP_URL}/api/webhooks/workflow \\
   -H "Content-Type: application/json" \\

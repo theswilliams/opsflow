@@ -2,7 +2,11 @@
 
 Assumption used throughout: **an attacker controls every document, webhook body, URL parameter and browser request.**
 
-This document describes what the code does **today**. Where a guarantee has limits, the limit is stated next to it. The remediation history for the independent audit of commit `b16395f` is in [Audit remediation](#audit-remediation-f1f11) below.
+This document describes what the code does **today**. Where a guarantee has limits, the limit is stated next to it. The remediation history for the written audit of commit `b16395f` is in [Audit remediation](#audit-remediation-f1f11) below.
+
+## Reporting a vulnerability
+
+This is a portfolio project with no support commitment or bug bounty. If you find a security problem, please use the repository's **Security → Report a vulnerability** (GitHub private vulnerability reporting) rather than a public issue.
 
 ## Assets and trust boundaries
 
@@ -91,9 +95,9 @@ All slow work (PDF parsing, AI extraction, the customer action) runs as a durabl
 - After the slow call everything is committed in **one transaction**, so there is no window that strands `EXTRACTED`/`VALIDATING`.
 - A sweeper re-queues expired leases (or fails them explicitly after `JOB_MAX_ATTEMPTS`) and re-enqueues workflows that are in a working state with no live job. **No state is left in limbo**: it is either being worked on, waiting for a person (`REVIEW_REQUIRED`), or explicitly `FAILED` with a Retry.
 
-## External actions: at-most-once side effects
+## External actions: idempotent side effects
 
-The action is an **outbox** row created in the approval transaction with a deterministic idempotency key `wf:<id>:customer_confirmation:v<approved version>`. The executor: (1) marks it `EXECUTING` durably, (2) calls the provider *with the key*, (3) commits `SUCCEEDED`. If step 3 fails, the retry re-calls the provider with the **same key**; a provider that honours idempotency (as real email/SMS APIs do) performs the effect once. The provider interface documents this requirement. A unique index alone could not do this — it fires only after the email has been sent.
+The action is an **outbox** row created in the approval transaction with a deterministic idempotency key `wf:<id>:customer_confirmation:v<approved version>`. The executor: (1) marks it `EXECUTING` durably, (2) calls the provider *with the key*, (3) commits `SUCCEEDED`. If step 3 fails, the retry re-calls the provider with the **same key**; a provider that honours idempotency (as real email/SMS APIs do) performs the effect once. The guarantee therefore depends on the provider contract: it is implemented and tested here against a simulated provider that behaves that way, not against a real email/SMS service. The provider interface documents the requirement. A unique index alone could not do this — it fires only after the email has been sent.
 
 ## AI-specific
 
@@ -136,23 +140,28 @@ Everything Prisma can express is declared in `schema.prisma` (including the sing
 
 ## Audit remediation (F1–F11)
 
-Independent audit of commit `b16395f`; each finding was reproduced first, fixed, and covered by regression tests.
+A written adversarial audit of commit `b16395f` reported 11 findings (2 critical, 2 high, 7 medium) plus 7 low-severity items. How each was handled:
+
+- **Reproduced against the original code** before fixing (a failing test or script, run on `b16395f`): F1, F2, F3, F4, F7, F9, F10 — 7 of 11.
+- **Confirmed by reading the code** (no runnable reproduction was written): F5, F6, F8, F11 — 4 of 11.
+- **All 11 were then fixed and have regression tests.** The original exploits were re-run against the fixed production build where that is practical: F1 and F2 over HTTP (`scripts/verify-audit-fixes.mjs`), F4 in a real browser (`scripts/e2e-smoke.mjs`), F3 by killing a real worker process.
+- The 7 low-severity items were fixed; see the commit history.
 
 | # | Finding | Fix | Tests |
 | --- | --- | --- | --- |
-| F1 | Replay bypass: unsigned `Idempotency-Key` outranked the signature-derived key (5 replays → 5 workflows) | Key inside the signature; durable receipt ledger with DB uniqueness; content-window dedupe; advisory-locked creation | `webhook › F1` (10 cases) |
+| F1 | Replay bypass: unsigned `Idempotency-Key` outranked the signature-derived key (5 replays → 5 workflows) | Key inside the signature; durable receipt ledger with DB uniqueness; content-window dedupe; advisory-locked creation | `webhook › F1` |
 | F2 | "direct" shared bucket → one outsider could lock out everyone | Peer address from the socket (MAC-protected), rightmost-trusted-hop XFF, failure-only per-address throttle, per-tenant limits, no per-email lockout | `webhook › F2`, `network-and-config` |
-| F3 | Workflows stuck forever (RECEIVED, PROCESSING, VALIDATING, EXECUTING) | Durable job queue, leases + fencing, atomic finalisation, sweeper, bounded retries, explicit FAILED | `jobs-recovery` (19) |
+| F3 | Workflows stuck forever (RECEIVED, PROCESSING, VALIDATING, EXECUTING) | Durable job queue, leases + fencing, atomic finalisation, sweeper, bounded retries, explicit FAILED | `jobs-recovery` |
 | F4 | Approval not tied to the version seen | Mandatory `expectedVersion`, atomic predicate, frozen approved snapshot, live validation on the page | `approval-version`, `e2e-smoke` |
 | F5 | Action could run twice after a failed commit | Outbox row + deterministic idempotency key passed to the provider | `action-outbox` |
 | F6 | Credential multiplication; unbounded AI spend | Credential cap, tenant limiter, per-user AI budgets with atomic reservation, usage records | `budget-limits`, `webhook › tenant capacity` |
 | F7 | Audit log weaker than documented | UPDATE/DELETE/TRUNCATE guards, RESTRICT FKs, explicit maintenance path, honest documentation | `db-integrity › F7` |
 | F8 | Hand-written constraints could be dropped by a future migration | Moved into `schema.prisma` where expressible; guard script; drift check in CI; integrity test | `db-integrity › F8` |
-| F9 | Evidence check satisfiable by "the" | Field-scoped deterministic verification with real source spans; pipeline owns the review decision | `evidence` (21) |
-| F10 | Duplicate check: 25 arbitrary rows, exact name | Normalised customer/address keys, indexed exact lookup, no cap | `duplicates` (35) |
-| F11 | Crafted PDF could freeze the server | Worker thread, timeout, memory cap, page cap, pool of 2, durable job | `pdf` (12) |
+| F9 | Evidence check satisfiable by "the" | Field-scoped deterministic verification with real source spans; pipeline owns the review decision | `evidence` |
+| F10 | Duplicate check: 25 arbitrary rows, exact name | Normalised customer/address keys, indexed exact lookup, no cap | `duplicates` |
+| F11 | Crafted PDF could freeze the server | Worker thread, timeout, memory cap, page cap, pool of 2, durable job | `pdf` |
 
-Additional findings from the **second (post-fix) audit**, all fixed with tests:
+Additional findings from a **second audit of the fixes themselves** (done by the same author as the fixes, so a self-review rather than an independent one), all fixed with tests:
 
 | Finding | Fix |
 | --- | --- |
@@ -163,7 +172,10 @@ Additional findings from the **second (post-fix) audit**, all fixed with tests:
 | The migration guard regex was silently vacuous (escapes lost) | Rewritten with `String.raw`, and the guard is now tested |
 | Cross-site GET could trigger a data export | `Sec-Fetch-Site` check |
 | Webhook JSON with `__proto__` / deep nesting | Verified rejected (400), no pollution |
+| `npm start` listened on all network interfaces by default | Binds `localhost` unless `HOSTNAME_BIND` is set (final pre-publication review) |
+| The data-export route could be called in a loop by a signed-in client (it reads every row the user owns) | Per-user limit of 5 per minute; the route's authentication, cross-site guard, tenant scoping and limit are now covered by `export-route` tests (final pre-publication review) |
+| The Integrations page still showed the pre-remediation signing recipe (it would have returned 401) | Corrected; the `docs-consistency` test now keeps it identical to `docs/N8N.md` (final pre-publication review) |
 
 ## Residual risk
 
-No MFA, password reset or email verification; open registration; in-memory rate limits (single instance); the audit log is not owner-proof or tamper-evident; style CSP allows inline styles; token/cost budgets can overshoot by the in-flight requests; the live Claude provider and the n8n workflow import have not been exercised against the real services; no malware scanning of uploads (text is extracted, files are not stored); PDF parsing is bounded but pdf.js remains a large attack surface (mitigated by isolation, not eliminated); single `APP_ENCRYPTION_KEY` without rotation tooling; free-form document text can still contain personal data that ends up in the model provider's logs (a data-processing decision for the operator).
+No MFA, password reset or email verification; no housekeeping for finished job rows, webhook receipts, AI-usage rows and audit events (they grow with use; only document/extracted content is purged); open registration; in-memory rate limits (single instance); the audit log is not owner-proof or tamper-evident; style CSP allows inline styles; token/cost budgets can overshoot by the in-flight requests; the live Claude provider and the n8n workflow import have not been exercised against the real services; no malware scanning of uploads (text is extracted, files are not stored); PDF parsing is bounded but pdf.js remains a large attack surface (mitigated by isolation, not eliminated); single `APP_ENCRYPTION_KEY` without rotation tooling; free-form document text can still contain personal data that ends up in the model provider's logs (a data-processing decision for the operator).

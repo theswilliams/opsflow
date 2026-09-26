@@ -71,7 +71,7 @@ curl -X POST "$OPSFLOW_URL/api/webhooks/workflow" \
   -d "$BODY"
 ```
 
-Or use the helper: `OPSFLOW_KEY_ID=… OPSFLOW_SECRET=… node scripts/send-webhook.mjs http://localhost:3000`, and `node scripts/verify-audit-fixes.mjs` to re-run the replay / rate-limit exploits against a running server.
+Or use the helper: `OPSFLOW_KEY_ID=… OPSFLOW_SECRET=… node scripts/send-webhook.mjs http://localhost:3000`, and `node scripts/verify-audit-fixes.mjs` (with `--proxied`, and the server started with `TRUSTED_PROXIES=127.0.0.1,::1`, for the client-isolation checks) to re-run the replay / rate-limit exploits against a running server.
 
 ### `POST /api/webhooks/workflow`
 

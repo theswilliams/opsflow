@@ -1,12 +1,16 @@
 // Re-runs the audit's network-level exploits against a RUNNING server and prints what happens.
 //
-//   OPSFLOW_KEY_ID=… OPSFLOW_SECRET=… node scripts/verify-audit-fixes.mjs [base-url]
+//   OPSFLOW_KEY_ID=… OPSFLOW_SECRET=… node scripts/verify-audit-fixes.mjs [base-url] [--proxied]
 //
-// For the client-isolation checks, start the server with TRUSTED_PROXIES=127.0.0.1 so this script (on the same
-// machine) can play several distinct clients via X-Forwarded-For.
+// The F1 (replay) checks work against any server. The F2 (client isolation) checks need this script, running on
+// the same machine, to play several distinct clients via X-Forwarded-For — which the server only honours from a
+// trusted proxy. Start the server with  TRUSTED_PROXIES=127.0.0.1,::1  and pass --proxied. Without --proxied the
+// F2 checks are skipped (not failed): from a single address, "attacker" and "victim" really are the same client.
 import { createHmac } from "node:crypto";
 
-const base = process.argv[2] ?? "http://localhost:3000";
+const args = process.argv.slice(2);
+const proxied = args.includes("--proxied");
+const base = args.find((a) => !a.startsWith("--")) ?? "http://localhost:3000";
 const keyId = process.env.OPSFLOW_KEY_ID;
 const secret = process.env.OPSFLOW_SECRET;
 if (!keyId || !secret) {
@@ -61,7 +65,9 @@ const check = (name, ok, detail) => {
 }
 
 // F2 — client isolation ---------------------------------------------------------------------------------------
-{
+if (!proxied) {
+  console.log("SKIP  F2  client-isolation checks — start the server with TRUSTED_PROXIES=127.0.0.1,::1 and pass --proxied (see the header of this script)");
+} else {
   const attacker = "198.51.100.66";
   const statuses = [];
   for (let i = 0; i < 30; i++) statuses.push((await send("{}", { sig: "sha256=bad", headers: { "X-Forwarded-For": `10.9.9.${i}, ${attacker}` } })).status);

@@ -96,14 +96,6 @@ export async function assertLease(tx: Client, job: ClaimedJob, now: Date = new D
   if (count !== 1) throw new LeaseLostError();
 }
 
-export async function extendLease(db: Db, job: ClaimedJob, leaseMs: number, now: Date) {
-  const { count } = await db.job.updateMany({
-    where: { id: job.id, leaseOwner: job.workerId, attempts: job.attempts, status: "RUNNING" },
-    data: { leaseExpiresAt: new Date(now.getTime() + leaseMs) },
-  });
-  if (count !== 1) throw new LeaseLostError();
-}
-
 export async function finishJob(tx: Client, job: ClaimedJob, status: "SUCCEEDED" | "FAILED", now: Date, lastError?: string) {
   const { count } = await tx.job.updateMany({
     where: { id: job.id, leaseOwner: job.workerId, attempts: job.attempts, status: "RUNNING" },

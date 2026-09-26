@@ -1,15 +1,25 @@
+# dependencies and build output
 node_modules
 .next
-.data
+coverage
+*.tsbuildinfo
+next-env.d.ts
+src/generated
+
+# secrets and local configuration (only the example file is tracked)
 .env
 .env.*
 !.env.example
-src/generated
-*.tsbuildinfo
-next-env.d.ts
-coverage
-.vercel
-.data-db.log
-.next-start.log
+
+# local database, logs and scratch output
+.data
+*.log
+.next-*.log
+
+# editor / OS / local tooling
 .claude
-.next-start2.log
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+.vercel

@@ -1,6 +1,7 @@
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { getDb } from "@/lib/db";
 import { exportUserData } from "@/lib/privacy";
+import { appLimiters } from "@/lib/rate-limits";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,9 @@ export async function GET(request: Request) {
   }
   const user = await getCurrentUser();
   if (!user) return Response.json({ error: { code: "unauthorized", message: "Sign in to export your data." } }, { status: 401 });
+  if (!appLimiters.exportByUser.check(user.id).allowed) {
+    return Response.json({ error: { code: "rate_limited", message: "Too many exports. Try again in a minute." } }, { status: 429, headers: { "retry-after": "60" } });
+  }
   const data = await exportUserData(getDb(), user.id);
   return new Response(JSON.stringify(data, null, 2), {
     headers: {
