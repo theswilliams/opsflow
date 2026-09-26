@@ -1,0 +1,2 @@
+# False positive: `generic-api-key` matched the identifier `idempotencyKey` in a test assertion. Not a secret.
+4b8bff5b54b304f3ac57017668b8c196db5aa708:tests/action-outbox.test.ts:generic-api-key:72
