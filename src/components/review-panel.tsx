@@ -2,6 +2,7 @@
 
 import clsx from "clsx";
 import { AlertTriangle, Check, Pencil, Plus, Trash2, X, XCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useActionState, useId, useState } from "react";
 import { approveAction, editFieldsAction, rejectAction } from "@/app/actions/workflows";
 import type { ActionState } from "@/app/actions/types";
@@ -11,10 +12,25 @@ import type { ValidationIssue } from "@/lib/validation/delivery";
 import { FieldError, SubmitButton } from "./form";
 import { Alert, ConfidenceBadge } from "./ui";
 
+const isStale = (message?: string) => Boolean(message && /changed after you opened it/i.test(message));
+
+/** Shown when someone else changed the request after this page was loaded: the reviewer must look again. */
+function StaleNotice({ message }: { message: string }) {
+  const router = useRouter();
+  return (
+    <Alert tone="warning" title="This request changed while you were reviewing">
+      <p>{message}</p>
+      <button type="button" className="btn btn-secondary mt-2" onClick={() => router.refresh()}>Load the latest version</button>
+    </Alert>
+  );
+}
+
 export type ReviewAssessments = Record<FieldName, FieldAssessment & { edited?: boolean }>;
 
 interface Props {
   workflowId: string;
+  /** The version the reviewer is looking at. Sent back with every edit/approval so a changed request cannot be approved unseen. */
+  version: number;
   /** True only while the workflow is awaiting review. */
   canReview: boolean;
   fields: ExtractedFields;
@@ -120,7 +136,7 @@ interface ItemDraft {
 const WINDOWS = ["", "morning", "afternoon", "evening", "specific", "unspecified"];
 
 export function ReviewPanel(props: Props) {
-  const { workflowId, canReview, fields, assessments, issues, reasons } = props;
+  const { workflowId, version, canReview, fields, assessments, issues, reasons } = props;
   const [editing, setEditing] = useState(false);
   const blocked = issues.some((i) => i.severity === "error");
 
@@ -150,18 +166,18 @@ export function ReviewPanel(props: Props) {
       )}
 
       {editing ? (
-        <EditForm workflowId={workflowId} fields={fields} issues={issues} onDone={() => setEditing(false)} />
+        <EditForm workflowId={workflowId} version={version} fields={fields} issues={issues} onDone={() => setEditing(false)} />
       ) : (
         <>
           <ExtractedFieldsList fields={fields} assessments={assessments} issues={issues} />
-          {canReview && <DecisionBar workflowId={workflowId} blocked={blocked} />}
+          {canReview && <DecisionBar workflowId={workflowId} version={version} blocked={blocked} />}
         </>
       )}
     </section>
   );
 }
 
-function DecisionBar({ workflowId, blocked }: { workflowId: string; blocked: boolean }) {
+function DecisionBar({ workflowId, version, blocked }: { workflowId: string; version: number; blocked: boolean }) {
   const [approveState, approve] = useActionState(approveAction.bind(null, workflowId), {} as ActionState);
   const [rejectState, reject] = useActionState(rejectAction.bind(null, workflowId), {} as ActionState);
   const [rejecting, setRejecting] = useState(false);
@@ -171,9 +187,7 @@ function DecisionBar({ workflowId, blocked }: { workflowId: string; blocked: boo
   return (
     <div className="border-t border-line bg-slate-50/70 px-4 py-4 sm:px-5">
       {error && (
-        <div className="mb-3">
-          <Alert tone="error">{error}</Alert>
-        </div>
+        <div className="mb-3">{isStale(error) ? <StaleNotice message={error} /> : <Alert tone="error">{error}</Alert>}</div>
       )}
       {blocked && (
         <div className="mb-3">
@@ -182,6 +196,7 @@ function DecisionBar({ workflowId, blocked }: { workflowId: string; blocked: boo
       )}
       {rejecting ? (
         <form action={reject} className="space-y-3">
+          <input type="hidden" name="version" value={version} />
           <div>
             <label className="label" htmlFor={commentId}>Reason for rejecting (optional)</label>
             <textarea id={commentId} name="comment" rows={2} maxLength={1000} className="input" />
@@ -193,6 +208,7 @@ function DecisionBar({ workflowId, blocked }: { workflowId: string; blocked: boo
         </form>
       ) : (
         <form action={approve} className="space-y-3">
+          <input type="hidden" name="version" value={version} />
           <div>
             <label className="label" htmlFor={`${commentId}-a`}>Note for the audit trail (optional)</label>
             <input id={`${commentId}-a`} name="comment" maxLength={1000} className="input" placeholder="e.g. Confirmed delivery window with customer by phone" />
@@ -209,7 +225,7 @@ function DecisionBar({ workflowId, blocked }: { workflowId: string; blocked: boo
   );
 }
 
-function EditForm({ workflowId, fields, issues, onDone }: { workflowId: string; fields: ExtractedFields; issues: ValidationIssue[]; onDone: () => void }) {
+function EditForm({ workflowId, version, fields, issues, onDone }: { workflowId: string; version: number; fields: ExtractedFields; issues: ValidationIssue[]; onDone: () => void }) {
   const [state, action] = useActionState(async (prev: ActionState, fd: FormData) => {
     const result = await editFieldsAction(workflowId, prev, fd);
     if (result.ok) onDone();
@@ -235,7 +251,8 @@ function EditForm({ workflowId, fields, issues, onDone }: { workflowId: string; 
 
   return (
     <form action={action} className="space-y-4 px-4 py-4 sm:px-5" noValidate>
-      {state.error && <Alert tone="error">{state.error}</Alert>}
+      <input type="hidden" name="version" value={version} />
+      {state.error && (isStale(state.error) ? <StaleNotice message={state.error} /> : <Alert tone="error">{state.error}</Alert>)}
       <div className="grid gap-4 sm:grid-cols-2">
         {text("customer", "Customer")}
         {text("address", "Delivery address")}

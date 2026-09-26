@@ -3,8 +3,10 @@ import { addDays, todayIn, weekdayIndex } from "@/lib/dates";
 import type { Db } from "@/lib/db";
 import { hashPassword } from "@/lib/auth/service";
 import { createCredential } from "@/lib/webhook/credentials";
-import { ActionError, SimulatedConfirmationProvider, type ActionProvider } from "@/lib/workflow/action-provider";
-import { approveWorkflow, createWorkflow, editWorkflowFields, processWorkflow, rejectWorkflow, type WorkflowDeps } from "@/lib/workflow/service";
+import { ActionError, type ActionProvider } from "@/lib/workflow/action-provider";
+import { withAuditMaintenance } from "@/lib/workflow/audit";
+import { defaultDeps } from "@/lib/workflow/core";
+import { approveWorkflow, editWorkflowFields, rejectWorkflow, submitWorkflow } from "@/lib/workflow/service";
 
 export const DEMO_EMAIL = "demo@opsflow.test";
 
@@ -33,9 +35,13 @@ export interface SeedResult {
   workflowIds: Record<string, string>;
 }
 
-/** Idempotent: rebuilds the demo user's workflows from scratch through the real pipeline. */
+/**
+ * Idempotent: rebuilds the demo user's workflows from scratch through the real pipeline.
+ * Audit rows are append-only, so the reset uses the explicit audit-maintenance path (demo data only).
+ */
 export async function seedDemo(db: Db, options: { password: string; now?: Date; timezone?: string; withCredential?: boolean }): Promise<SeedResult> {
   const now = options.now ?? new Date();
+  const startedAt = Date.now();
   const timezone = options.timezone ?? "America/Toronto";
   const passwordHash = await hashPassword(options.password);
   const user = await db.user.upsert({
@@ -43,44 +49,48 @@ export async function seedDemo(db: Db, options: { password: string; now?: Date; 
     create: { email: DEMO_EMAIL, name: "Demo Dispatcher", passwordHash },
     update: { passwordHash },
   });
-  await db.workflow.deleteMany({ where: { userId: user.id } });
-  await db.auditEvent.deleteMany({ where: { userId: user.id } });
+  await withAuditMaintenance(db, async (tx) => {
+    await tx.auditEvent.deleteMany({ where: { userId: user.id } });
+    await tx.workflow.deleteMany({ where: { userId: user.id } });
+    await tx.notification.deleteMany({ where: { userId: user.id } });
+  });
 
-  const base: WorkflowDeps = {
+  const base = defaultDeps({
     db,
-    ai: new MockAIProvider(),
-    actions: new SimulatedConfirmationProvider(),
-    now: () => now,
+    ai: () => new MockAIProvider(),
+    // A running clock anchored at `now`: dates stay deterministic, but jobs created a moment later are still "due".
+    now: () => new Date(now.getTime() + (Date.now() - startedAt)),
     timezone,
     extraction: { retryDelayMs: 0 },
-  };
+    budget: { dailyRequests: 0, dailyTokens: 0, monthlyCostUsd: 0 },
+  });
   const actor = { type: "USER", id: user.id } as const;
   const today = todayIn(timezone, now);
   let deliveryDate = addDays(today, 2);
   while ([0, 6].includes(weekdayIndex(deliveryDate))) deliveryDate = addDays(deliveryDate, 1);
 
   const ids: Record<string, string> = {};
+  const versionOf = async (id: string) => (await db.workflow.findUniqueOrThrow({ where: { id } })).version;
   const create = async (key: string, text: string, source: "PASTE" | "WEBHOOK" = "PASTE") => {
-    const c = await createWorkflow(base, { userId: user.id, actor: source === "WEBHOOK" ? { type: "WEBHOOK", id: "demo" } : actor, source, kind: "text", text });
+    const c = await submitWorkflow(base, { userId: user.id, actor: source === "WEBHOOK" ? { type: "WEBHOOK", id: "demo" } : actor, source, kind: "text", text });
     ids[key] = c.id;
-    await processWorkflow(base, { workflowId: c.id, userId: user.id });
     return c.id;
   };
 
   // 1. Completed
   const completed = await create("completed", DEMO_REQUESTS.straightforward(deliveryDate));
-  await approveWorkflow(base, { workflowId: completed, userId: user.id, actor });
+  await approveWorkflow(base, { workflowId: completed, userId: user.id, actor, expectedVersion: await versionOf(completed) });
 
   // 2. Failed: approved, but the external action failed
-  const failed = await create("failed", "Customer: Lakeshore Concrete\n\nDeliver 12 bags of mortar mix to 900 Lakeshore Road, London, Ontario on " + deliveryDate + " at 7am. Call Rui 519-555-0111.", "WEBHOOK");
-  await approveWorkflow({ ...base, actions: new OutageActionProvider() }, { workflowId: failed, userId: user.id, actor });
+  const failed = await create("failed", `Customer: Lakeshore Concrete\n\nDeliver 12 bags of mortar mix to 900 Lakeshore Road, London, Ontario on ${deliveryDate} at 7am. Call Rui 519-555-0111.`, "WEBHOOK");
+  await approveWorkflow({ ...base, actions: new OutageActionProvider() }, { workflowId: failed, userId: user.id, actor, expectedVersion: await versionOf(failed) });
 
   // 3. Review required: ambiguous time
   await create("review", DEMO_REQUESTS.ambiguousTime);
 
   // 4. Rejected duplicate
   const rejected = await create("rejected", DEMO_REQUESTS.duplicate.replace("this Friday", "Friday"));
-  await rejectWorkflow(base, { workflowId: rejected, userId: user.id, actor, comment: "Duplicate of an existing order." });
+  await rejectWorkflow(base, { workflowId: rejected, userId: user.id, actor, comment: "Duplicate of an existing order.", expectedVersion: await versionOf(rejected) });
 
   // 5. Missing information: no address
   await create("missing", DEMO_REQUESTS.missingAddress);
@@ -90,11 +100,11 @@ export async function seedDemo(db: Db, options: { password: string; now?: Date; 
 
   // 7. Edited then waiting for final approval
   const edited = await create("edited", `Customer: Cedar Ridge Builders\n\nSend 8 pallets of OSB sheathing to 15 Colborne Street, London, Ontario on ${deliveryDate} in the afternoon. Call Jo.`);
-  await editWorkflowFields(base, { workflowId: edited, userId: user.id, actor, updates: { contact_phone: "519-555-0199", requested_time_start: "13:00", requested_time_end: "15:00" } });
+  await editWorkflowFields(base, { workflowId: edited, userId: user.id, actor, updates: { contact_phone: "519-555-0199", requested_time_start: "13:00", requested_time_end: "15:00" }, expectedVersion: await versionOf(edited) });
 
   let credential: SeedResult["credential"];
   if (options.withCredential) {
-    await db.apiCredential.deleteMany({ where: { userId: user.id, label: "Demo n8n" } });
+    await db.apiCredential.updateMany({ where: { userId: user.id, label: "Demo n8n", revokedAt: null }, data: { revokedAt: new Date() } });
     credential = await createCredential(db, user.id, "Demo n8n");
   }
   return { userId: user.id, email: DEMO_EMAIL, credential, workflowIds: ids };

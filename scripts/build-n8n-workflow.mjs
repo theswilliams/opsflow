@@ -3,23 +3,31 @@
 // The JavaScript that n8n executes lives here as plain strings so tests can run the exact same code.
 import { writeFileSync } from "node:fs";
 
-export const SIGN_REQUEST_CODE = `// Builds the exact JSON body and signs it: HMAC-SHA256(secret, timestamp + "." + body)
-const crypto = require('crypto');
-const input = $json.body ?? $json;
-const body = JSON.stringify({
-  type: 'delivery_request',
-  text: String(input.text ?? ''),
-  external_id: String(input.external_id ?? $execution.id),
-});
-const timestamp = String(Math.floor(Date.now() / 1000));
-const signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(timestamp + '.' + body).digest('hex');
-return { json: { body, timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };`;
+export const SIGN_REQUEST_CODE = [
+  "// Builds the exact JSON body and signs it (scheme v1): HMAC-SHA256(secret, 'v1' LF timestamp LF idempotency-key LF body).",
+  "const crypto = require('crypto');",
+  "const input = $json.body ?? $json;",
+  "const text = String(input.text ?? '');",
+  "// STABLE idempotency: prefer the upstream system's own id (e.g. the email Message-ID). Otherwise derive it from the",
+  "// content, so a repeated trigger for the same message returns the same OpsFlow workflow instead of creating a",
+  "// duplicate (the n8n execution id changes on every run and must NOT be used for this).",
+  "const externalId = String(input.external_id ?? input.message_id ?? crypto.createHash('sha256').update(text).digest('hex').slice(0, 32));",
+  "const body = JSON.stringify({ type: 'delivery_request', text, external_id: externalId });",
+  "const timestamp = String(Math.floor(Date.now() / 1000));",
+  "// external_id lives inside the signed body; no separate Idempotency-Key header is sent, so its slot is empty.",
+  "const message = ['v1', timestamp, '', body].join('\\n');",
+  "const signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(message).digest('hex');",
+  "return { json: { body, timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };",
+].join("\n");
 
-export const SIGN_STATUS_CODE = `// GET requests are signed over an empty body.
-const crypto = require('crypto');
-const timestamp = String(Math.floor(Date.now() / 1000));
-const signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(timestamp + '.').digest('hex');
-return { json: { timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };`;
+export const SIGN_STATUS_CODE = [
+  "// GET requests are signed over an empty body and an empty idempotency-key slot.",
+  "const crypto = require('crypto');",
+  "const timestamp = String(Math.floor(Date.now() / 1000));",
+  "const message = ['v1', timestamp, '', ''].join('\\n');",
+  "const signature = 'sha256=' + crypto.createHmac('sha256', $env.OPSFLOW_SECRET).update(message).digest('hex');",
+  "return { json: { timestamp, signature, keyId: $env.OPSFLOW_KEY_ID } };",
+].join("\n");
 
 const note = (name, content, position, width = 300, height = 160) => ({
   parameters: { content, width, height },

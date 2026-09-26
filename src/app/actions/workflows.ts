@@ -4,12 +4,13 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { editableFieldsSchema } from "@/lib/ai/schema";
 import { requireUser } from "@/lib/auth/current-user";
-import { DocumentError, extractDocumentText } from "@/lib/documents/extract";
+import { DocumentError, inspectUpload } from "@/lib/documents/extract";
 import { logger } from "@/lib/logger";
 import { appLimiters } from "@/lib/rate-limits";
+import { defaultDeps } from "@/lib/workflow/core";
 import { parseEditForm } from "@/lib/workflow/edit-form";
 import { WorkflowError } from "@/lib/workflow/errors";
-import { approveWorkflow, createWorkflow, defaultDeps, editWorkflowFields, lightDeps, processWorkflow, rejectWorkflow, retryWorkflow } from "@/lib/workflow/service";
+import { approveWorkflow, editWorkflowFields, rejectWorkflow, retryWorkflow, submitWorkflow, type CreateWorkflowInput } from "@/lib/workflow/service";
 import type { ActionState } from "./types";
 
 const MAX_PASTE = 20_000;
@@ -21,12 +22,14 @@ function toState(e: unknown, fallback = "Something went wrong. Please try again.
   return { error: fallback };
 }
 
-async function submit(userId: string, input: { kind: "text" | "document"; text: string; fileName?: string; mimeType?: string; sizeBytes?: number }, source: "PASTE" | "UPLOAD") {
+const versionOf = (formData: FormData) => {
+  const raw = formData.get("version");
+  return typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : undefined;
+};
+
+async function submit(userId: string, input: Pick<CreateWorkflowInput, "kind" | "text" | "fileName" | "mimeType" | "sizeBytes" | "rawBytes">, source: "PASTE" | "UPLOAD") {
   if (!appLimiters.createByUser.check(userId).allowed) throw new WorkflowError("BAD_INPUT", "You are submitting requests too quickly. Wait a moment and try again.");
-  const deps = defaultDeps();
-  const actor = { type: "USER", id: userId } as const;
-  const created = await createWorkflow(deps, { userId, actor, source, ...input });
-  await processWorkflow(deps, { workflowId: created.id, userId, actor });
+  const created = await submitWorkflow(defaultDeps(), { userId, actor: { type: "USER", id: userId }, source, ...input });
   return created.id;
 }
 
@@ -50,8 +53,12 @@ export async function createFromUploadAction(_prev: ActionState, formData: FormD
   if (!(file instanceof File) || file.size === 0) return { fieldErrors: { file: "Choose a file to upload." } };
   let id: string;
   try {
-    const doc = await extractDocumentText(file);
-    id = await submit(user.id, { kind: "document", text: doc.text, fileName: doc.fileName, mimeType: doc.mimeType, sizeBytes: doc.sizeBytes }, "UPLOAD");
+    // Cheap checks only on the request path; PDF parsing happens in the background job (isolated worker thread).
+    const doc = await inspectUpload(file);
+    id =
+      doc.kind === "pdf"
+        ? await submit(user.id, { kind: "document", text: "", rawBytes: doc.bytes, fileName: doc.fileName, mimeType: doc.mimeType, sizeBytes: doc.sizeBytes }, "UPLOAD")
+        : await submit(user.id, { kind: "document", text: doc.text, fileName: doc.fileName, mimeType: doc.mimeType, sizeBytes: doc.sizeBytes }, "UPLOAD");
   } catch (e) {
     return toState(e);
   }
@@ -68,7 +75,13 @@ export async function editFieldsAction(workflowId: string, _prev: ActionState, f
     return { error: "Some values are not valid. Check the highlighted fields.", fieldErrors };
   }
   try {
-    const { changes } = await editWorkflowFields(lightDeps(), { workflowId, userId: user.id, actor: { type: "USER", id: user.id }, updates });
+    const { changes } = await editWorkflowFields(defaultDeps(), {
+      workflowId,
+      userId: user.id,
+      actor: { type: "USER", id: user.id },
+      updates,
+      expectedVersion: versionOf(formData),
+    });
     revalidatePath(`/workflows/${workflowId}`);
     return { ok: `Saved ${changes.length} change${changes.length === 1 ? "" : "s"}.` };
   } catch (e) {
@@ -79,8 +92,10 @@ export async function editFieldsAction(workflowId: string, _prev: ActionState, f
 
 export async function approveAction(workflowId: string, _prev: ActionState, formData: FormData): Promise<ActionState> {
   const user = await requireUser();
+  const version = versionOf(formData);
+  if (version === undefined) return { error: "This page is out of date. Reload and try again." };
   try {
-    await approveWorkflow(lightDeps(), { workflowId, userId: user.id, actor: { type: "USER", id: user.id }, comment: String(formData.get("comment") ?? "") });
+    await approveWorkflow(defaultDeps(), { workflowId, userId: user.id, actor: { type: "USER", id: user.id }, expectedVersion: version, comment: String(formData.get("comment") ?? "") });
   } catch (e) {
     return toState(e);
   }
@@ -92,7 +107,7 @@ export async function approveAction(workflowId: string, _prev: ActionState, form
 export async function rejectAction(workflowId: string, _prev: ActionState, formData: FormData): Promise<ActionState> {
   const user = await requireUser();
   try {
-    await rejectWorkflow(lightDeps(), { workflowId, userId: user.id, actor: { type: "USER", id: user.id }, comment: String(formData.get("comment") ?? "") });
+    await rejectWorkflow(defaultDeps(), { workflowId, userId: user.id, actor: { type: "USER", id: user.id }, comment: String(formData.get("comment") ?? ""), expectedVersion: versionOf(formData) });
   } catch (e) {
     return toState(e);
   }

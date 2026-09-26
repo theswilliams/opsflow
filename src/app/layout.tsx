@@ -1,6 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
+// Nonce-based CSP requires dynamic rendering: static HTML cannot carry a per-request nonce.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: { default: "OpsFlow", template: "%s · OpsFlow" },
   description: "Turn messy business requests into structured, actionable workflows.",

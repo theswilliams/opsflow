@@ -1,6 +1,6 @@
-import { addDays, isValidIsoDate, weekdayIndex, WEEKDAYS } from "@/lib/dates";
 import type { AIProvider, ExtractionRequest, ProviderResponse } from "./provider";
 import type { Extraction, FieldAssessment, FieldName, Item } from "./schema";
+import { parseDateExpression, parseTimeExpression } from "./text-resolvers";
 
 /**
  * Deterministic, rule-based stand-in for an LLM. It exists so the whole product can be
@@ -13,7 +13,6 @@ const STREET_SUFFIX =
 const PROVINCES = ["Ontario", "ON", "Quebec", "QC", "Manitoba", "MB", "Alberta", "AB", "British Columbia", "BC", "Nova Scotia", "NS", "New Brunswick", "NB"];
 const UNITS = "pallets?|skids?|boxes|box|bundles?|units?|cases?|rolls?|sheets?|bags?|pieces?|crates?|drums?|pails?|tons?|loads?";
 const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12 };
-const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
 
 const A = (status: FieldAssessment["status"], confidence: FieldAssessment["confidence"], evidence: string | null = null, note: string | null = null): FieldAssessment => ({
   status,
@@ -74,89 +73,46 @@ export function extractDeliveryRequest(text: string, referenceDate: string): Ext
 
   // Date -------------------------------------------------------------------
   let requestedDate: string | null = null;
-  const iso = /\b(\d{4}-\d{2}-\d{2})\b/.exec(text);
-  const slash = /\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/.exec(text);
-  const monthDay = new RegExp(`\\b(${MONTHS.map((m) => m.slice(0, 3)).join("|")})[a-z]*\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, "i").exec(text);
-  const weekday = new RegExp(`\\b(?:(this|next|on|by)\\s+)?(${WEEKDAYS.join("|")})\\b`, "i").exec(text);
-  const relative = /\b(today|tomorrow)\b/i.exec(text);
-
-  if (iso?.[1] && isValidIsoDate(iso[1])) {
-    requestedDate = iso[1];
-    assess.requested_date = A("known", "high", iso[0]);
-  } else if (slash) {
-    assess.requested_date = A("ambiguous", "low", slash[0], "Numeric date could be DD/MM or MM/DD.");
-    ambiguities.push({ field: "requested_date", note: `"${slash[0]}" could be read day-first or month-first.` });
+  const date = parseDateExpression(text, referenceDate);
+  if (date.kind === "iso") {
+    requestedDate = date.value;
+    assess.requested_date = A("known", "high", date.evidence);
+  } else if (date.kind === "slash") {
+    assess.requested_date = A("ambiguous", "low", date.evidence, "Numeric date could be DD/MM or MM/DD.");
+    ambiguities.push({ field: "requested_date", note: `"${date.evidence}" could be read day-first or month-first.` });
     missing.push("unambiguous delivery date");
-  } else if (monthDay?.[1] && monthDay[2]) {
-    const month = MONTHS.findIndex((m) => m.startsWith(monthDay[1]!.toLowerCase())) + 1;
-    const day = Number(monthDay[2]);
-    let year = Number(referenceDate.slice(0, 4));
-    let candidate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    if (isValidIsoDate(candidate) && candidate < referenceDate) {
-      year += 1;
-      candidate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    }
-    if (isValidIsoDate(candidate)) {
-      requestedDate = candidate;
-      assess.requested_date = A("inferred", "medium", monthDay[0], "Year inferred from the request date.");
-    } else {
-      assess.requested_date = A("ambiguous", "low", monthDay[0], "Not a valid calendar date.");
-    }
-  } else if (relative?.[1]) {
-    requestedDate = relative[1].toLowerCase() === "today" ? referenceDate : addDays(referenceDate, 1);
-    assess.requested_date = A("inferred", "high", relative[0], `Resolved against request date ${referenceDate}.`);
-  } else if (weekday?.[2]) {
-    const target = WEEKDAYS.indexOf(weekday[2].toLowerCase() as (typeof WEEKDAYS)[number]);
-    let ahead = (target - weekdayIndex(referenceDate) + 7) % 7;
-    if (ahead === 0) ahead = 7;
-    const isNext = weekday[1]?.toLowerCase() === "next";
-    if (isNext && ahead <= 2) ahead += 7;
-    requestedDate = addDays(referenceDate, ahead);
-    assess.requested_date = A(
-      "inferred",
-      isNext ? "medium" : "high",
-      weekday[0],
-      `Resolved "${weekday[0]}" against request date ${referenceDate}.`,
-    );
-  } else {
+  } else if (date.kind === "invalid") {
+    assess.requested_date = A("ambiguous", "low", date.evidence, "Not a valid calendar date.");
+  } else if (date.kind === "none") {
     assess.requested_date = MISSING();
     missing.push("delivery date");
+  } else {
+    requestedDate = date.value;
+    assess.requested_date = A("inferred", date.confidence, date.evidence, date.note);
   }
 
   // Time -------------------------------------------------------------------
   let window: Extraction["fields"]["requested_time_window"] = null;
   let start: string | null = null;
   let end: string | null = null;
-  const range = /\bbetween\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:and|-|to)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(text);
-  const at = /\b(?:at|around|by|before)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i.exec(text);
-  const dayPart = /\b(morning|afternoon|evening|first thing|end of day)\b/i.exec(text);
-  const to24 = (h: number, m: number, mer: string | undefined, fallbackMer?: string) => {
-    let hour = h;
-    const meridiem = (mer ?? fallbackMer)?.toLowerCase();
-    if (meridiem === "pm" && hour < 12) hour += 12;
-    if (meridiem === "am" && hour === 12) hour = 0;
-    return `${String(hour).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-  };
-  if (range) {
-    const endMer = range[6];
-    start = to24(Number(range[1]), Number(range[2] ?? 0), range[3], endMer);
-    end = to24(Number(range[4]), Number(range[5] ?? 0), endMer);
+  const time = parseTimeExpression(text);
+  if (time.kind === "range") {
+    start = time.start;
+    end = time.end;
     window = "specific";
-    assess.requested_time_window = A("known", "high", range[0]);
-    assess.requested_time_start = A("known", "high", range[0]);
-    assess.requested_time_end = A("known", "high", range[0]);
-  } else if (at) {
-    start = to24(Number(at[1]), Number(at[2] ?? 0), at[3]);
+    assess.requested_time_window = A("known", "high", time.evidence);
+    assess.requested_time_start = A("known", "high", time.evidence);
+    assess.requested_time_end = A("known", "high", time.evidence);
+  } else if (time.kind === "at") {
+    start = time.start;
     window = "specific";
-    assess.requested_time_window = A("known", "high", at[0]);
-    assess.requested_time_start = A("known", "high", at[0]);
+    assess.requested_time_window = A("known", "high", time.evidence);
+    assess.requested_time_start = A("known", "high", time.evidence);
     assess.requested_time_end = A("missing", "unknown", null, "Only a start time was given.");
-  } else if (dayPart?.[1]) {
-    const word = dayPart[1].toLowerCase();
-    window = word === "afternoon" || word === "end of day" ? "afternoon" : word === "evening" ? "evening" : "morning";
-    const phrase = /\b(?:(?:this|next|on)\s+)?(?:\w+day\s+)?(?:first thing\s+)?(?:in the\s+)?(morning|afternoon|evening|end of day)/i.exec(text)?.[0] ?? dayPart[0];
-    assess.requested_time_window = A("ambiguous", "medium", phrase, `Only a general "${word}" was requested; no specific time.`);
-    ambiguities.push({ field: "requested_time_window", note: `Customer asked for "${word}" but gave no specific delivery time.` });
+  } else if (time.kind === "daypart") {
+    window = time.window;
+    assess.requested_time_window = A("ambiguous", "medium", time.phrase, `Only a general "${time.word}" was requested; no specific time.`);
+    ambiguities.push({ field: "requested_time_window", note: `Customer asked for "${time.word}" but gave no specific delivery time.` });
     missing.push("specific delivery time");
   } else {
     assess.requested_time_window = MISSING();

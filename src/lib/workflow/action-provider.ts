@@ -1,4 +1,6 @@
+import { Prisma } from "@/generated/prisma/client";
 import { formatClock, formatLongDate } from "@/lib/dates";
+import type { Db } from "@/lib/db";
 import type { ExtractedFields } from "@/lib/ai/schema";
 
 export interface ActionContext {
@@ -26,7 +28,12 @@ export interface ActionProvider {
   readonly name: string;
   /** "simulated" providers perform no external side effects. */
   readonly mode: "simulated" | "live";
-  execute(ctx: ActionContext): Promise<ActionResult>;
+  /**
+   * MUST be idempotent on `idempotencyKey`: calling again with the same key returns the original result and
+   * performs no second side effect (as Stripe/SES/Twilio-style APIs do). The workflow layer relies on this to
+   * make retries after a lost database commit safe.
+   */
+  execute(ctx: ActionContext, options: { idempotencyKey: string }): Promise<ActionResult>;
 }
 
 export function describeTime(f: ExtractedFields): string {
@@ -49,7 +56,13 @@ export class SimulatedConfirmationProvider implements ActionProvider {
   readonly name = "simulated-confirmation";
   readonly mode = "simulated" as const;
 
-  async execute({ workflowId, fields }: ActionContext): Promise<ActionResult> {
+  /** `ledger` stands in for the external provider's own idempotency store. */
+  constructor(private readonly ledger: Db) {}
+
+  async execute({ workflowId, fields }: ActionContext, { idempotencyKey }: { idempotencyKey: string }): Promise<ActionResult> {
+    const prior = await this.ledger.providerDelivery.findUnique({ where: { idempotencyKey } });
+    if (prior) return prior.payload as unknown as ActionResult;
+
     const lines = [
       "Delivery request approved.",
       "",
@@ -62,11 +75,21 @@ export class SimulatedConfirmationProvider implements ActionProvider {
     if (fields.contact_name) lines.push(`Contact: ${fields.contact_name}${fields.contact_phone ? ` (${fields.contact_phone})` : ""}`);
     if (fields.special_instructions) lines.push(`Instructions: ${fields.special_instructions}`);
     lines.push("", `Reference: ${workflowId.slice(-8).toUpperCase()}`);
-    return {
+    const result: ActionResult = {
       kind: "customer_confirmation",
       subject: `Delivery confirmed — ${fields.customer}`,
       body: lines.join("\n"),
       delivery: "SIMULATED — generated and recorded only. No message was sent to anyone.",
     };
+    try {
+      await this.ledger.providerDelivery.create({ data: { idempotencyKey, provider: this.name, payload: result as unknown as Prisma.InputJsonValue } });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+        const winner = await this.ledger.providerDelivery.findUniqueOrThrow({ where: { idempotencyKey } });
+        return winner.payload as unknown as ActionResult;
+      }
+      throw err;
+    }
+    return result;
   }
 }

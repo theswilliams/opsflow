@@ -5,9 +5,9 @@
   "description": "Turn messy business requests into structured, actionable workflows.",
   "scripts": {
     "setup": "node scripts/setup-env.mjs",
-    "dev": "next dev",
+    "dev": "node server.mjs --dev",
     "build": "prisma generate && next build",
-    "start": "next start",
+    "start": "node server.mjs",
     "lint": "eslint .",
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run",
@@ -19,7 +19,12 @@
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset --force",
     "postinstall": "prisma generate",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "dev:next": "next dev",
+    "worker": "tsx scripts/worker.ts",
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "e2e": "node scripts/e2e-smoke.mjs",
+    "verify:audit": "node scripts/verify-audit-fixes.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
@@ -48,6 +53,7 @@
     "eslint-config-next": "^16.3.6",
     "postcss": "^8.5.28",
     "prisma": "^7.10.0",
+    "puppeteer-core": "^25.12.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",

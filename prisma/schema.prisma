@@ -53,6 +53,20 @@ enum ActionType {
 }
 
 enum ActionStatus {
+  PENDING
+  EXECUTING
+  SUCCEEDED
+  FAILED
+}
+
+enum JobType {
+  PROCESS_WORKFLOW
+  EXECUTE_ACTION
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
   SUCCEEDED
   FAILED
 }
@@ -69,11 +83,15 @@ model User {
   name         String
   passwordHash String
   createdAt    DateTime @default(now())
+  /// Set when the account is deleted. The row is kept as an anonymised tombstone so audit history stays attributable.
+  deletedAt    DateTime?
 
   sessions       Session[]
   workflows      Workflow[]
   apiCredentials ApiCredential[]
   auditEvents    AuditEvent[]
+  aiUsage        AiUsage[]
+  notifications  Notification[]
 }
 
 model Session {
@@ -120,6 +138,15 @@ model Workflow {
   needsAttention  Boolean         @default(false)
   /// Most important reason a person must look at this (shown on the dashboard).
   attentionReason String?
+  /// Optimistic-concurrency version. Bumped on every material change to the extracted fields;
+  /// approval must present the version the reviewer saw.
+  version         Int             @default(1)
+  /// When the workflow entered REVIEW_REQUIRED (drives ageing indicators).
+  reviewRequiredAt DateTime?
+  /// Normalised keys used for indexed duplicate detection (see lib/validation/normalize.ts).
+  customerKey     String?
+  addressKey      String?
+  deliveryDate    String?
   failureReason   String?
   idempotencyKey  String?
   createdAt       DateTime        @default(now())
@@ -132,11 +159,16 @@ model Workflow {
   reviews    Review[]
   actions    WorkflowAction[]
   auditEvents AuditEvent[]
+  jobs       Job[]
+  receipts   WebhookReceipt[]
+  aiUsage    AiUsage[]
 
   @@unique([id, userId])
   @@unique([userId, idempotencyKey])
   @@index([userId, status])
   @@index([userId, createdAt])
+  @@index([userId, customerKey, deliveryDate])
+  @@index([status, updatedAt])
 }
 
 model WorkflowInput {
@@ -148,8 +180,12 @@ model WorkflowInput {
   mimeType    String?
   sizeBytes   Int
   contentHash String
-  /// Extracted plain text (already length-limited).
+  /// Extracted plain text (already length-limited). Empty until a queued document has been parsed.
   content     String
+  /// Uploaded PDF bytes awaiting background parsing; cleared as soon as text has been extracted.
+  rawBytes    Bytes?
+  /// Set when retention purged the content.
+  purgedAt    DateTime?
   createdAt   DateTime @default(now())
 
   workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
@@ -199,18 +235,21 @@ model ValidationResult {
 
 model Review {
   id         String         @id @default(cuid())
-  workflowId String
+  /// Unique: a workflow has at most one review decision.
+  workflowId String         @unique
   userId     String
   reviewerId String
   decision   ReviewDecision
   comment    String?
+  /// The workflow version the reviewer approved, and a frozen copy of exactly what they approved.
+  approvedVersion Int?
+  approvedFields  Json?
   /// Field-level differences between the AI output and what was approved.
   changes    Json
   createdAt  DateTime       @default(now())
 
   workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
 
-  @@index([workflowId])
 }
 
 model WorkflowAction {
@@ -218,17 +257,108 @@ model WorkflowAction {
   workflowId String
   userId     String
   type       ActionType
-  status     ActionStatus
+  status     ActionStatus @default(PENDING)
   /// "simulated" — no external side effects are performed.
   mode       String
   executedBy String
+  /// Deterministic per (workflow, type, approved version). Sent to the provider so a retry can never
+  /// produce a second side effect, and unique so there is exactly one action row per approval.
+  idempotencyKey String   @unique
+  attempts   Int          @default(0)
   output     Json?
   error      String?
   createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
 
   workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
 
-  @@index([workflowId])
+  @@unique([workflowId, type])
+}
+
+/// Durable work queue. One row per (workflow, type); retries reuse the row.
+model Job {
+  id             String    @id @default(cuid())
+  workflowId     String
+  userId         String
+  type           JobType
+  status         JobStatus @default(QUEUED)
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  runAfter       DateTime  @default(now())
+  /// Worker that holds the lease; `attempts` doubles as the fencing token.
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  finishedAt     DateTime?
+
+  workflow Workflow @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@unique([workflowId, type])
+  @@index([status, runAfter])
+  @@index([status, leaseExpiresAt])
+}
+
+/// Durable ledger of authenticated webhook requests. Replays are detected by the database, not by memory.
+model WebhookReceipt {
+  id            String   @id @default(cuid())
+  userId        String
+  credentialId  String
+  /// SHA-256 of the (already verified) signature: identifies one exact signed request.
+  signatureHash String
+  /// SHA-256 of the request text: identifies the underlying business request.
+  contentHash   String
+  workflowId    String?
+  createdAt     DateTime @default(now())
+
+  workflow Workflow? @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@unique([userId, signatureHash])
+  @@index([userId, contentHash, createdAt])
+}
+
+/// Every AI request, whether or not it succeeded. Source of truth for budgets and cost visibility.
+model AiUsage {
+  id            String   @id @default(cuid())
+  userId        String
+  workflowId    String?
+  provider      String
+  model         String
+  ok            Boolean
+  inputTokens   Int?
+  outputTokens  Int?
+  /// Estimated cost in micro-USD. Null unless prices are configured AND the provider reported tokens.
+  costMicroUsd  Int?
+  createdAt     DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  workflow Workflow? @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+/// Simulated outbound notifications ("a person needs to review this").
+model Notification {
+  id         String    @id @default(cuid())
+  userId     String
+  workflowId String?
+  kind       String
+  message    String
+  createdAt  DateTime  @default(now())
+  readAt     DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+}
+
+/// The external provider's own de-duplication ledger (what a real email/SMS API does with an idempotency key).
+model ProviderDelivery {
+  idempotencyKey String   @id
+  provider       String
+  payload        Json
+  createdAt      DateTime @default(now())
 }
 
 model AuditEvent {
@@ -243,8 +373,9 @@ model AuditEvent {
   metadata   Json?
   createdAt  DateTime  @default(now())
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workflow Workflow? @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Cascade)
+  // RESTRICT, not CASCADE: audit history is never removed as a side effect of deleting something else.
+  user     User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  workflow Workflow? @relation(fields: [workflowId, userId], references: [id, userId], onDelete: Restrict)
 
   @@index([workflowId, createdAt])
   @@index([userId, createdAt])

@@ -60,7 +60,7 @@ export function attentionRequired(db: Db, userId: string, take = 6) {
 export function recentActivity(db: Db, userId: string, take = 8) {
   return db.auditEvent.findMany({
     where: { userId, workflowId: { not: null } },
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take,
     include: { workflow: { select: { id: true, customerName: true } } },
   });
@@ -75,9 +75,24 @@ export function getWorkflowDetail(db: Db, userId: string, id: string) {
       validations: { orderBy: { createdAt: "desc" }, take: 1 },
       reviews: { orderBy: { createdAt: "asc" } },
       actions: { orderBy: { createdAt: "asc" } },
-      auditEvents: { orderBy: { createdAt: "asc" } },
+      jobs: { select: { type: true, status: true, attempts: true, maxAttempts: true, runAfter: true } },
+      auditEvents: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
     },
   });
 }
 
 export type WorkflowDetail = NonNullable<Awaited<ReturnType<typeof getWorkflowDetail>>>;
+
+export function recentNotifications(db: Db, userId: string, take = 5) {
+  return db.notification.findMany({ where: { userId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take });
+}
+
+/** AI usage rows for the last `days` days plus the most recent individual requests. */
+export async function aiUsageOverview(db: Db, userId: string, now: Date, days = 14) {
+  const since = new Date(now.getTime() - days * 86_400_000);
+  const [rows, recent] = await Promise.all([
+    db.aiUsage.findMany({ where: { userId, createdAt: { gte: since } }, orderBy: { createdAt: "desc" }, take: 5000 }),
+    db.aiUsage.findMany({ where: { userId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 20, include: { workflow: { select: { id: true, customerName: true } } } }),
+  ]);
+  return { rows, recent };
+}

@@ -1,98 +1,15 @@
 /**
- * Regression tests for issues found during the security review. Each test names the attack it prevents.
+ * Cross-cutting regression tests. The issue-specific suites (webhook.test.ts F1/F2, jobs-recovery F3,
+ * approval-version F4, action-outbox F5, budget-limits F6, db-integrity F7/F8, evidence F9, duplicates F10, pdf F11)
+ * hold the detailed cases; this file keeps the remaining "hostile input is inert" guards.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { execSync } from "node:child_process";
+import { describe, expect, it } from "vitest";
 import { getDb } from "@/lib/db";
-import { createCredential } from "@/lib/webhook/credentials";
-import { handleWorkflowPost, limiters } from "@/lib/webhook/handler";
-import { signPayload } from "@/lib/webhook/signature";
-import { DELIVERY_TEXT, makeUser, makeWorkflow, testDeps } from "./helpers";
+import { redact } from "@/lib/logger";
+import { DELIVERY_TEXT, makeUser, makeWorkflow } from "./helpers";
 
 const db = getDb();
-const now = () => String(Math.floor(Date.now() / 1000));
-
-function signed(cred: { keyId: string; secret: string }, body: object, headers: Record<string, string> = {}) {
-  const raw = JSON.stringify(body);
-  const ts = now();
-  return new Request("http://localhost/api/webhooks/workflow", {
-    method: "POST",
-    body: raw,
-    headers: { "content-type": "application/json", "x-opsflow-key-id": cred.keyId, "x-opsflow-timestamp": ts, "x-opsflow-signature": signPayload(cred.secret, ts, raw), ...headers },
-  });
-}
-
-beforeEach(() => Object.values(limiters).forEach((l) => l.reset()));
-afterEach(() => {
-  delete process.env.TRUST_PROXY;
-});
-
-describe("replay of a captured webhook request", () => {
-  it("returns the original workflow instead of creating a duplicate (no idempotency key supplied)", async () => {
-    const user = await makeUser("replay");
-    const cred = await createCredential(db, user.id, "t");
-    const body = { type: "delivery_request", text: DELIVERY_TEXT };
-    const captured = signed(cred, body);
-    const replay = captured.clone();
-
-    const first = await handleWorkflowPost(captured, () => testDeps());
-    const second = await handleWorkflowPost(replay, () => testDeps());
-    expect(first.status).toBe(201);
-    expect(second.status).toBe(200);
-    expect((await second.json()).duplicate).toBe(true);
-    expect(await db.workflow.count({ where: { userId: user.id } })).toBe(1);
-  });
-
-  it("a freshly signed identical body is a new request (legitimate resubmission)", async () => {
-    const user = await makeUser("resubmit");
-    const cred = await createCredential(db, user.id, "t");
-    const body = { type: "delivery_request", text: DELIVERY_TEXT };
-    expect((await handleWorkflowPost(signed(cred, body, { "x-opsflow-timestamp": now() }), () => testDeps())).status).toBe(201);
-    // A different timestamp yields a different signature, hence a different implicit key.
-    const later = String(Math.floor(Date.now() / 1000) + 5);
-    const raw = JSON.stringify(body);
-    const req = new Request("http://localhost/x", {
-      method: "POST",
-      body: raw,
-      headers: { "content-type": "application/json", "x-opsflow-key-id": cred.keyId, "x-opsflow-timestamp": later, "x-opsflow-signature": signPayload(cred.secret, later, raw) },
-    });
-    expect((await handleWorkflowPost(req, () => testDeps())).status).toBe(201);
-  });
-});
-
-describe("spoofed client-IP headers", () => {
-  const anon = (ip: string) =>
-    new Request("http://localhost/api/webhooks/workflow", { method: "POST", body: "{}", headers: { "content-type": "application/json", "x-forwarded-for": ip } });
-
-  it("cannot be used to dodge the per-IP rate limit when no trusted proxy is configured", async () => {
-    const codes: number[] = [];
-    for (let i = 0; i < 125; i++) codes.push((await handleWorkflowPost(anon(`198.51.100.${i}`), () => testDeps())).status);
-    expect(codes.slice(-3)).toEqual([429, 429, 429]);
-  });
-
-  it("is honoured only when TRUST_PROXY=true", async () => {
-    process.env.TRUST_PROXY = "true";
-    const codes: number[] = [];
-    for (let i = 0; i < 125; i++) codes.push((await handleWorkflowPost(anon(`198.51.100.${i}`), () => testDeps())).status);
-    expect(codes.every((c) => c === 401)).toBe(true);
-  });
-});
-
-describe("audit trail tampering", () => {
-  it("the database refuses to modify an audit event", async () => {
-    const user = await makeUser("audit");
-    const { id } = await makeWorkflow(user.id);
-    const event = await db.auditEvent.findFirstOrThrow({ where: { workflowId: id } });
-    await expect(db.auditEvent.update({ where: { id: event.id }, data: { message: "nothing to see here" } })).rejects.toThrow(/append-only/);
-    await expect(db.auditEvent.updateMany({ where: { workflowId: id }, data: { message: "x" } })).rejects.toThrow(/append-only/);
-    expect((await db.auditEvent.findUniqueOrThrow({ where: { id: event.id } })).message).toBe(event.message);
-  });
-
-  it("new events can still be appended", async () => {
-    const user = await makeUser("audit2");
-    const { id } = await makeWorkflow(user.id);
-    await db.auditEvent.create({ data: { workflowId: id, userId: user.id, actorType: "SYSTEM", eventType: "NOTE", message: "ok" } });
-  });
-});
 
 describe("hostile content is inert", () => {
   it("HTML/script in a document is stored verbatim as text and never altered or executed server-side", async () => {
@@ -101,12 +18,50 @@ describe("hostile content is inert", () => {
     const { id } = await makeWorkflow(user.id, evil);
     const input = await db.workflowInput.findUniqueOrThrow({ where: { workflowId: id } });
     expect(input.content).toContain("<img src=x onerror=alert(1)>");
-    // Rendering safety comes from React escaping; a source-level check keeps it that way.
   });
 
-  it("no component uses dangerouslySetInnerHTML", async () => {
-    const { execSync } = await import("node:child_process");
-    const out = execSync('git grep -n "dangerouslySetInnerHTML" -- src || true', { encoding: "utf8" });
+  it("no component uses dangerouslySetInnerHTML or eval-like sinks", () => {
+    const out = execSync('git grep -nE "dangerouslySetInnerHTML|\\beval\\(|new Function\\(" -- src || true', { encoding: "utf8" });
     expect(out.trim()).toBe("");
+  });
+
+  it("the ordinary demo request still processes to a reviewable state (sanity for the hardened pipeline)", async () => {
+    const user = await makeUser("sane");
+    expect((await makeWorkflow(user.id, DELIVERY_TEXT)).workflow.status).toBe("REVIEW_REQUIRED");
+  });
+
+  it("logs never carry documents, secrets or contact data", () => {
+    const out = JSON.stringify(redact({ text: DELIVERY_TEXT, signature: "sha256=abc", email: "a@b.test", nested: { apiKey: "sk-ant-1", address: "125 King", workflowId: "wf_1" } }));
+    expect(out).not.toMatch(/King Street|sha256=abc|a@b\.test|sk-ant/);
+    expect(out).toContain("wf_1");
+  });
+
+  it("job error text stored for operators never reaches the user-facing workflow fields", async () => {
+    const user = await makeUser("leak");
+    const { testDeps } = await import("./helpers");
+    const boom = testDeps({ ai: { name: "mock", isMock: true, extract: async () => Promise.reject(new Error("password=hunter2 at /srv/app/x.ts:9")) }, maxJobAttempts: 1 });
+    const { id, workflow } = await makeWorkflow(user.id, DELIVERY_TEXT, boom);
+    expect(workflow.status).toBe("FAILED");
+    const visible = JSON.stringify([workflow, await db.auditEvent.findMany({ where: { workflowId: id } })]);
+    expect(visible).not.toMatch(/hunter2|\/srv\/app/);
+  });
+});
+
+describe("operator-facing error text is scrubbed before it is stored", () => {
+  it("removes API keys, credentials, passwords, bearer tokens and connection strings", async () => {
+    const { errorMessage } = await import("@/lib/workflow/core");
+    const out = errorMessage(new Error("401 sk-ant-api03-ABCDEF123456 Bearer abc.def.ghi password=hunter2 secret: s3cr3t ofs_Y0zbPh4ZB-token postgresql://opsflow:pw@localhost:5432/db failed"));
+    expect(out).not.toMatch(/sk-ant|abc\.def|hunter2|s3cr3t|ofs_Y0z|opsflow:pw/);
+    expect(out).toContain("failed");
+    expect(errorMessage(new Error("x".repeat(1000))).length).toBe(300);
+  });
+
+  it("job.lastError never contains the secrets that a failing provider echoed back", async () => {
+    const user = await makeUser("scrub");
+    const { testDeps } = await import("./helpers");
+    const boom = testDeps({ ai: { name: "mock", isMock: true, extract: async () => Promise.reject(new Error("upstream said: invalid x-api-key sk-ant-api03-LEAKEDKEY123456")) }, maxJobAttempts: 1 });
+    const { id } = await makeWorkflow(user.id, DELIVERY_TEXT, boom);
+    const job = await db.job.findFirstOrThrow({ where: { workflowId: id } });
+    expect(job.lastError ?? "").not.toMatch(/LEAKEDKEY/);
   });
 });
