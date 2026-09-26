@@ -1,5 +1,7 @@
 # OpsFlow
 
+[![CI](https://github.com/theswilliams/opsflow/actions/workflows/ci.yml/badge.svg)](https://github.com/theswilliams/opsflow/actions/workflows/ci.yml)
+
 **Turn messy business requests into structured, actionable workflows.**
 
 OpsFlow is a workflow-automation platform for small and mid-sized businesses. It takes an unstructured request (an email, a pasted note, a PDF, or a webhook call), extracts structured data with an LLM, validates it deterministically, holds it for human review when anything is uncertain, and only after a person approves *the version they saw* runs an automated action — with a complete audit trail.
