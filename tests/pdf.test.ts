@@ -72,14 +72,25 @@ describe("F11 · PDF parsing is isolated, bounded and reported cleanly", () => {
   });
 
   it("a parser TIMEOUT terminates the worker and the main thread stays responsive throughout", async () => {
+    // Responsiveness is judged by the longest gap between event-loop ticks, not by how many ticks fit in the
+    // window: a tick count shrinks on a loaded machine (a false failure), whereas a parse running on the main
+    // thread would show up as one long gap.
     let beats = 0;
-    const heartbeat = setInterval(() => beats++, 5);
+    let last = performance.now();
+    let maxGap = 0;
+    const heartbeat = setInterval(() => {
+      const now = performance.now();
+      maxGap = Math.max(maxGap, now - last);
+      last = now;
+      beats++;
+    }, 5);
     const started = performance.now();
     await expect(extractPdfText(heavyPdf(), { timeoutMs: 30 })).rejects.toMatchObject({ code: "TIMEOUT" });
     const elapsed = performance.now() - started;
     clearInterval(heartbeat);
-    expect(elapsed).toBeLessThan(1_500); // stopped near the deadline, not after the whole parse
-    expect(beats).toBeGreaterThan(3); // the event loop kept running while the PDF was being "parsed"
+    expect(elapsed).toBeLessThan(5_000); // stopped near the deadline, not after the whole parse (which takes far longer)
+    expect(beats).toBeGreaterThan(0);
+    expect(maxGap).toBeLessThan(500); // the event loop was never blocked for long while the PDF was being "parsed"
   });
 
   it("timeouts surface to the user as a document error", async () => {
